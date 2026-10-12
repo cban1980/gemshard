@@ -22,65 +22,31 @@ A shard can help on several IRC networks at once, each with its own hub: one
 Gemdrop on several networks, or a different hub on each. It has one key; each
 network has its own IRC connection, hub link and saved state.
 
-## Hosting a shard (Docker)
+## Hosting a shard
 
-All you need is Docker, git and bash, and an IRC server of the network that
-the hub isn't on. Nothing listens on a port: the shard only connects out, to
-IRC. Ask the hub's owner for what `SHARD INFO` shows them: the **network** name,
-the **hub's gecos** (its IRC realname), the **hub's nick**, and the **hub's key**
-(`SHA256:...`).
+One command on a Linux machine, as a normal user:
 
-1. Get the code and set up the shard (pick a short name for it, e.g. your nick):
+```sh
+curl -fsSL https://raw.githubusercontent.com/cban1980/gemshard/main/setup.sh | bash
+```
 
-   ```
-   git clone https://github.com/cban1980/gemshard && cd gemshard
-   bin/gemshard-docker setup myshard
-   ```
+It checks the machine (and installs Docker if needed), asks for a name, the
+**join code** from the hub's owner, an IRC server and a nick, and prints a
+`SHARD ADD` line to send back to them. Once they've run it, the shard starts
+and links. Run `bash ~/gemshard/setup.sh` again any time for a menu: status,
+start, more networks, log, settings, backup, update, and so on.
 
-   It asks for the network, the hub's gecos, nick and key, your IRC server and
-   the shard's nick. More networks come later, one at a time:
-   `bin/gemshard-docker add-network myshard` asks the same for the next one. Then it prints a line like this:
-
-   ```
-   /msg Linuks SHARD ADD myshard SHA256:...
-   ```
-
-2. Send that line to the hub's owner (for each network, its hub's owner). They
-   run it on IRC, and that lets your shard link there.
-
-3. Start it:
-
-   ```
-   bin/gemshard-docker start myshard
-   bin/gemshard-docker status            # on IRC? linked to the hub?
-   ```
-
-   It keeps running, and starts again after a reboot.
-
-Everyday commands:
-
-| Command | Does |
-| --- | --- |
-| `bin/gemshard-docker status` | each shard, per network: its IRC server and nick, linked or not, its channels |
-| `bin/gemshard-docker add-network myshard` | help on one more network, with its hub; then `restart myshard` |
-| `bin/gemshard-docker logs myshard -f` | follow its log |
-| `bin/gemshard-docker edit myshard` | change its config, then `restart myshard` |
-| `bin/gemshard-docker update` | get the latest version and restart the running shards |
-| `bin/gemshard-docker backup myshard` | archive the config and the key (keep it private) |
-| `bin/gemshard-docker stop myshard` | stop it (it quits IRC) |
-
-`bin/gemshard-docker help` lists everything. Each shard's files are in
-`shards/<name>/` (`config.yml`, and `data/` with the key, and a folder per
-network with its saved state),
-readable only by you. The container runs as your user, read-only, with no
-privileges and 128 MB of memory.
+[docs/hosting.md](docs/hosting.md) has both sides in full: what the hub's owner sends
+and runs, and what the host does. The shard only connects out, to IRC, and runs
+in Docker as the host's user, read-only, with no privileges and 128 MB of
+memory. `bin/gemshard-docker help` lists the same things as commands.
 
 ## For the hub's owner
 
 The hub is Gemdrop with its `shards` plugin:
 
 ```
-/msg Linuks SHARD INFO                          the network, gecos, nick and key to hand out
+/msg Linuks SHARD INFO                          the hub's details, and the join code to hand out
 /msg Linuks SHARD ADD myshard SHA256:...        what the shard's host sends you
 /msg Linuks SHARD LIST                          the shards, linked or not, and their servers
 /msg Linuks SHARD DEL myshard                   unlink one for good
@@ -91,8 +57,8 @@ The hub is Gemdrop with its `shards` plugin:
 Ruby 3.2+ with its standard library is all a shard needs:
 
 ```
-bin/gemshard init myshard           # makes myshard/config.yml and the shard's key
-bin/gemshard add-network myshard/config.yml --network IRCnet ...   # more networks, if any
+bin/gemshard init myshard --code gemshard1:...    # makes myshard/config.yml and the shard's key
+bin/gemshard add-network myshard/config.yml --code gemshard1:...  # more networks, if any
 $EDITOR myshard/config.yml          # name, and per network: hub_gecos, hub_nick, hub_fingerprint, irc
 bin/gemshard check myshard/config.yml
 bin/gemshard myshard/config.yml     # run it (or with systemd: see below)

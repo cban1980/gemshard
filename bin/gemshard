@@ -3,8 +3,10 @@
 #                              make a config and a key in DIR (default: here)
 # gemshard add-network [CONFIG] --network NET [network options]
 #                              add a network (with its own hub) to a config
-#   network options: --network NET --hub-gecos TEXT --hub-nick NICK --hub-fingerprint FP
-#                    --server HOST --port N --no-tls --nick NICK
+#   network options: --code JOINCODE (network, hub gecos, nick and key in one, from SHARD INFO)
+#                    or --network NET --hub-gecos TEXT --hub-nick NICK --hub-fingerprint FP;
+#                    and --server HOST --port N --no-tls --nick NICK
+# gemshard decode-code JOINCODE  what a join code holds, as KEY=VALUE lines
 # gemshard fingerprint [CONFIG] the key's fingerprint, for SHARD ADD on the hubs
 # gemshard check [CONFIG]      check the config without running
 # gemshard [CONFIG]            run, on every network in the config (default: config.yml)
@@ -62,6 +64,11 @@ end
 def network_options(values)
   OptionParser.new do |o|
     o.on("--name N") { |v| values["name"] = v.downcase }
+    o.on("--code JOINCODE") do |v|
+      values.update(Gemshard::JoinCode.decode(v))
+    rescue Gemshard::ConfigError => e
+      die e.message
+    end
     o.on("--network NET") { |v| values["network"] = v }
     o.on("--hub-gecos TEXT") { |v| values["hub_gecos"] = v }
     o.on("--hub-nick NICK") { |v| values["hub_nick"] = v }
@@ -108,6 +115,12 @@ when "add-network"
 
   File.write(path, "#{text.rstrip}\n#{network_block(values)}", perm: 0o600)
   puts "Added #{values['network']} to #{path}."
+when "decode-code"
+  begin
+    Gemshard::JoinCode.decode(ARGV[1]).each { |key, value| puts "#{key}=#{value}" }
+  rescue Gemshard::ConfigError => e
+    die e.message
+  end
 when "fingerprint"
   config = load_config(ARGV[1] || "config.yml")
   puts Gemshard::Protocol.fingerprint(Gemshard::Identity.load(config["data_dir"]))
