@@ -1,0 +1,27 @@
+# Gemshard's config. gemshard init writes this file and makes the key.
+
+# The shard's name, as added on the hubs: /msg <hub> SHARD ADD <name> <fingerprint>
+name: "myshard"
+
+# The key (shard.key) and each network's saved state (default: data, next to this file).
+data_dir: data
+
+# The networks this shard helps on, each with its own hub. More with:
+# gemshard add-network --network NET ...
+networks:
+  "EFnet":
+    # The hub (Gemdrop with the shards plugin): SHARD INFO on the hub shows these.
+    # The shard knows the hub by its gecos (IRC realname), as its nick may
+    # change; hub_nick is only where to look for it first.
+    hub_gecos: "Gemdrop IRC bot"
+    hub_nick: "Linuks"
+    hub_fingerprint: "SHA256:..."
+    irc:
+      server: "irc.example.net"   # another server of the network than the hub's
+      port: 6697
+      tls: true
+      tls_verify: true          # false for servers with self-signed certificates
+      nick: "Gemshard"
+      alt_nicks: ["Gemshard_","Gemshard2"]
+      user: gemshard
+      realname: Gemshard

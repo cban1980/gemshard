@@ -1,0 +1,143 @@
+#!/usr/bin/env ruby
+# gemshard init [DIR] [--name N] [network options]
+#                              make a config and a key in DIR (default: here)
+# gemshard add-network [CONFIG] --network NET [network options]
+#                              add a network (with its own hub) to a config
+#   network options: --network NET --hub-gecos TEXT --hub-nick NICK --hub-fingerprint FP
+#                    --server HOST --port N --no-tls --nick NICK
+# gemshard fingerprint [CONFIG] the key's fingerprint, for SHARD ADD on the hubs
+# gemshard check [CONFIG]      check the config without running
+# gemshard [CONFIG]            run, on every network in the config (default: config.yml)
+$LOAD_PATH.unshift File.expand_path("../lib", __dir__)
+require "gemshard"
+require "fileutils"
+require "optparse"
+
+def die(message)
+  warn "gemshard: #{message}"
+  exit 1
+end
+
+def yaml(value) = value.is_a?(String) || value.is_a?(Array) ? JSON.generate(value) : value.to_s
+
+# One network's entry under "networks:", with what isn't given as examples.
+def network_block(v)
+  nick = v["nick"] || "Gemshard"
+  <<~YAML.gsub(/^(?=.)/, "  ")
+    #{yaml(v['network'] || 'EFnet')}:
+      # The hub (Gemdrop with the shards plugin): SHARD INFO on the hub shows these.
+      # The shard knows the hub by its gecos (IRC realname), as its nick may
+      # change; hub_nick is only where to look for it first.
+      hub_gecos: #{yaml(v['hub_gecos'] || 'Gemdrop IRC bot')}
+      hub_nick: #{yaml(v['hub_nick'] || 'Linuks')}
+      hub_fingerprint: #{yaml(v['hub_fingerprint'] || 'SHA256:...')}
+      irc:
+        server: #{yaml(v['server'] || 'irc.example.net')}   # another server of the network than the hub's
+        port: #{v['port'] || 6697}
+        tls: #{v.fetch('tls', true)}
+        tls_verify: true          # false for servers with self-signed certificates
+        nick: #{yaml(nick)}
+        alt_nicks: #{yaml(["#{nick}_", "#{nick}2"])}
+        user: gemshard
+        realname: Gemshard
+  YAML
+end
+
+def new_config(name, values)
+  <<~YAML + network_block(values)
+    # Gemshard's config. gemshard init writes this file and makes the key.
+
+    # The shard's name, as added on the hubs: /msg <hub> SHARD ADD <name> <fingerprint>
+    name: #{yaml(name || 'myshard')}
+
+    # The key (shard.key) and each network's saved state (default: data, next to this file).
+    data_dir: data
+
+    # The networks this shard helps on, each with its own hub. More with:
+    # gemshard add-network --network NET ...
+    networks:
+  YAML
+end
+
+def network_options(values)
+  OptionParser.new do |o|
+    o.on("--name N") { |v| values["name"] = v.downcase }
+    o.on("--network NET") { |v| values["network"] = v }
+    o.on("--hub-gecos TEXT") { |v| values["hub_gecos"] = v }
+    o.on("--hub-nick NICK") { |v| values["hub_nick"] = v }
+    o.on("--hub-fingerprint FP") { |v| values["hub_fingerprint"] = v }
+    o.on("--server HOST") { |v| values["server"] = v }
+    o.on("--port N", Integer) { |v| values["port"] = v }
+    o.on("--no-tls") { values["tls"] = false }
+    o.on("--nick NICK") { |v| values["nick"] = v }
+  end
+end
+
+def load_config(path)
+  Gemshard::Config.load(path)
+rescue Gemshard::ConfigError => e
+  die e.message
+end
+
+case ARGV[0]
+when "init"
+  values = {}
+  args = network_options(values).parse(ARGV[1..])
+  dir = args.first || "."
+  FileUtils.mkdir_p(dir)
+  config = File.join(dir, "config.yml")
+  if File.exist?(config)
+    puts "#{config} is there already; left as it is."
+  else
+    File.write(config, new_config(values["name"], values), perm: 0o600)
+    puts "Wrote #{config}."
+  end
+  key = Gemshard::Identity.load(File.join(dir, "data"))
+  puts "This shard's key: #{Gemshard::Protocol.fingerprint(key)}"
+when "add-network"
+  values = {}
+  args = network_options(values).parse(ARGV[1..])
+  path = args.first || "config.yml"
+  die "add-network needs --network NET" if values["network"].to_s.empty?
+  text = File.read(path)
+  data = YAML.safe_load(text) || {}
+  die "#{path} has no networks: section (it is for one network only); make a new config with gemshard init" unless
+    data["networks"].is_a?(Hash)
+  die "#{values['network']} is in #{path} already" if data["networks"].keys.any? { |n| n.to_s.casecmp?(values["network"]) }
+  die "#{path}: networks: must be the last section to add to it" unless text.rstrip.lines.last.start_with?("  ")
+
+  File.write(path, "#{text.rstrip}\n#{network_block(values)}", perm: 0o600)
+  puts "Added #{values['network']} to #{path}."
+when "fingerprint"
+  config = load_config(ARGV[1] || "config.yml")
+  puts Gemshard::Protocol.fingerprint(Gemshard::Identity.load(config["data_dir"]))
+when "check"
+  config = load_config(ARGV[1] || "config.yml")
+  puts "Config OK: shard #{config['name']}"
+  config["networks"].each do |net|
+    puts "  #{net['network']}: hub \"#{net['hub_gecos']}\"#{" (first looked for as #{net['hub_nick']})" if net['hub_nick']}, " \
+         "IRC #{net.dig('irc', 'server')}:#{net.dig('irc', 'port')}#{' (TLS)' if net.dig('irc', 'tls')} as #{net.dig('irc', 'nick')}"
+  end
+else
+  config = load_config(ARGV[0] || "config.yml")
+  $stdout.sync = true
+  level = ENV.fetch("GEMSHARD_LOG_LEVEL", "info")
+  identity = Gemshard::Identity.load(config["data_dir"])
+  # Each network writes its own again; one no longer in the config must not count.
+  Dir[File.join(config["data_dir"], "**", "status.json")].each { |f| File.delete(f) }
+  several = config["networks"].size > 1
+  shards = config["networks"].map do |net|
+    logger = Logger.new($stdout, progname: several ? "gemshard/#{net['network']}" : "gemshard")
+    logger.level = level
+    Gemshard::Shard.new(net, identity: identity, logger: logger)
+  end
+  %w[INT TERM].each do |signal|
+    trap(signal) do
+      Thread.new do
+        shards.map { |shard| Thread.new { shard.stop } }.each(&:join)
+        exit
+      end
+    end
+  end
+  shards.map { |shard| Thread.new { shard.run } }.each(&:join)
+end
