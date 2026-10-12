@@ -301,7 +301,7 @@ start_one() {
   case "$(container_state "$name")" in
     running) echo "$name is running already"; return ;;
     absent) ;;
-    *) docker rm "$(container "$name")" >/dev/null ;;
+    *) docker rm --force "$(container "$name")" >/dev/null ;; # stopped, or restarting after a crash
   esac
   run_gemshard "$name" check /shard/config.yml >/dev/null || die "$name: the config isn't right (details: $PROG check $name)"
   run_opts "$name"
@@ -320,7 +320,9 @@ stop_one() {
       docker stop --time 10 "$(container "$name")" >/dev/null
       docker rm "$(container "$name")" >/dev/null 2>&1 || true
       info "Stopped $name" ;;
-    *) docker rm "$(container "$name")" >/dev/null 2>&1 || true ;;
+    *) # restarting after a crash, or stopped
+      docker rm --force "$(container "$name")" >/dev/null 2>&1 || true
+      info "Stopped $name" ;;
   esac
 }
 
@@ -366,10 +368,11 @@ cmd_status() {
   if [ -n "${1:-}" ]; then require_shard "$1"; names=$1; else names=$(all_shards); fi
   [ -n "$names" ] || { echo "No shards yet."; return; }
   for name in $names; do
-    if ! is_running "$name"; then
-      echo "$name: not running"
-      continue
-    fi
+    case "$(container_state "$name")" in
+      running) ;;
+      restarting) echo "$name: keeps stopping and restarting (see its log: $PROG logs $name -n 30)"; continue ;;
+      *) echo "$name: not running"; continue ;;
+    esac
     local health
     health=$(docker container inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$(container "$name")")
     docker exec "$(container "$name")" ruby -rjson -e '
@@ -447,7 +450,8 @@ cmd_update() {
   cmd_build
   local name
   for name in $(all_shards); do
-    if is_running "$name"; then
+    # Also one that keeps crashing: the new version may be its fix.
+    if [ "$(container_state "$name")" != absent ]; then
       stop_one "$name" >/dev/null
       start_one "$name" "${GEMSHARD_LOG_LEVEL:-info}"
     fi
