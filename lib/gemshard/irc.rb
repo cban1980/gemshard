@@ -36,6 +36,7 @@ module Gemshard
     BYTES_PER_SECOND = 120.0
     LEAD = 8.0
     MAX_QUEUE = 500
+    MAX_LINE = 8704  # IRCv3 tags and a message
 
     def initialize(host:, port:, tls:, tls_verify:, logger:)
       @host = host
@@ -48,6 +49,7 @@ module Gemshard
       @urgent = []
       @normal = []
       @socket = nil
+      @buffer = +""
     end
 
     def connect
@@ -56,6 +58,7 @@ module Gemshard
       socket = @tls ? wrap_tls(tcp) : tcp
       @lock.synchronize do
         @socket = socket
+        @buffer = +""
         @urgent.clear
         @normal.clear
       end
@@ -65,13 +68,25 @@ module Gemshard
 
     def connected? = @lock.synchronize { !@socket.nil? }
 
-    # A line from the server, or nil when the connection is gone.
+    # A line from the server, or nil when the connection is gone or has
+    # been silent for timeout seconds. Reads what there is into a buffer of
+    # our own: with TLS, data can wait decrypted in the TLS socket while its
+    # TCP socket has nothing more to read.
     def gets(timeout = 300)
       socket = @lock.synchronize { @socket } or return nil
-      return nil unless socket.wait_readable(timeout)
-
-      line = socket.gets("\r\n", 8704) or return nil
-      line.force_encoding(Encoding::UTF_8).scrub.chomp
+      loop do
+        if (eol = @buffer.index("\n"))
+          line = @buffer.slice!(0, eol + 1)
+          return line.force_encoding(Encoding::UTF_8).scrub.chomp.delete_suffix("\r")
+        end
+        @buffer.clear if @buffer.bytesize > MAX_LINE # no line ending in sight: not a line
+        case (chunk = socket.read_nonblock(16_384, exception: false))
+        when :wait_readable then IO.select([socket.to_io], nil, nil, timeout) or return nil
+        when :wait_writable then IO.select(nil, [socket.to_io], nil, timeout) or return nil
+        when nil then return nil
+        else @buffer << chunk.b
+        end
+      end
     rescue IOError, SystemCallError, OpenSSL::SSL::SSLError
       nil
     end
