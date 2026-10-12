@@ -5,6 +5,7 @@ end
 
 require_relative "gemshard/protocol"
 require_relative "gemshard/config"
+require_relative "gemshard/join_code"
 require_relative "gemshard/irc"
 require_relative "gemshard/enforcer"
 require_relative "gemshard/link"

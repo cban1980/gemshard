@@ -23,21 +23,11 @@ usage() {
   cat <<EOF
 Usage: $PROG <command> [options]
 
-Setting up a shard:
-  setup NAME [options]      make shards/NAME: its config and its key, for one network,
-                            then print what to send the hub's owner. Asks for what
-                            isn't given:
-      --network NET         the hub's name for the network (e.g. EFnet)
-      --hub-gecos TEXT      the hub bot's gecos (IRC realname): shards know it by that
-      --hub-nick NICK       the hub bot's nick now (where to look for it first)
-      --hub-fingerprint FP  the hub's key (SHA256:...), from the hub's owner
-      --server HOST         the IRC server this shard uses (not the hub's)
-      --port N              default 6697
-      --no-tls              plain IRC (default: TLS)
-      --nick NICK           the shard's nick on IRC
-  add-network NAME [options]
-                            help on one more network, with its own hub (same
-                            options as setup, --network needed)
+Setting up a shard (or just run: bash setup.sh, which does all of this by menu):
+  setup NAME                make shards/NAME for one network: asks for the join code
+                            from the hub's owner (or the hub's details), the IRC
+                            server and the shard's nick; prints what to send back
+  add-network NAME          help on one more network, with its own hub (asks the same)
   edit NAME                 open its config.yml in \$EDITOR and check it
   check NAME                check its config.yml
   fingerprint NAME          its key's fingerprint (for SHARD ADD on the hub)
@@ -159,38 +149,64 @@ ask() {
 
 # --- commands ----------------------------------------------------------------
 
-# One network's settings, from options (net_* variables), then asked for
-# what is missing when there is a terminal.
-parse_network_options() {
-  net_network="" net_gecos="" net_nick="" net_fp="" net_server="" net_port="" net_tls=true net_shard_nick=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --network|--hub-gecos|--hub-nick|--hub-fingerprint|--server|--port|--nick)
-        [ $# -ge 2 ] || die "$1 needs a value"
-        case "$1" in
-          --network) net_network=$2 ;; --hub-gecos) net_gecos=$2 ;; --hub-nick) net_nick=$2 ;;
-          --hub-fingerprint) net_fp=$2 ;; --server) net_server=$2 ;; --port) net_port=$2 ;; --nick) net_shard_nick=$2 ;;
-        esac
-        shift 2 ;;
-      --no-tls) net_tls=false; shift ;;
-      *) die "unknown option $1" ;;
+# One network's settings (net_* variables), asked for one by one.
+reset_network() {
+  net_network="" net_gecos="" net_nick="" net_fp="" net_server="" net_port="" net_tls=true net_shard_nick="" net_code=""
+}
+
+# A join code (SHARD INFO on the hub) fills in the network and the hub's
+# gecos, nick and key.
+use_code() {
+  local out line
+  ensure_image
+  out=$(docker run --rm --read-only --network none --cap-drop ALL --security-opt no-new-privileges \
+          --user "$(id -u):$(id -g)" "$IMAGE" decode-code "$1" 2>&1) || { echo "    ${out#gemshard: }"; return 1; }
+  while IFS= read -r line; do
+    case "${line%%=*}" in
+      network) net_network=${line#*=} ;;
+      hub_gecos) net_gecos=${line#*=} ;;
+      hub_nick) net_nick=${line#*=} ;;
+      hub_fingerprint) net_fp=${line#*=} ;;
     esac
+  done <<< "$out"
+  echo "    That's network $net_network, hub $net_nick (gecos \"$net_gecos\")."
+}
+
+# Asks until there is an answer (or takes the default).
+ask_needed() {
+  local answer
+  while true; do
+    answer=$(ask "$@")
+    [ -z "$answer" ] || { echo "$answer"; return; }
+    echo "    (this one is needed)" >&2
   done
 }
 
 ask_network() {
-  [ -t 0 ] || return 0
-  echo "The hub's owner can give you the network, gecos, nick and key (SHARD INFO on the hub)."
-  [ -n "$net_network" ] || net_network=$(ask "Network (the hub's name for it, e.g. EFnet)")
-  [ -n "$net_gecos" ] || net_gecos=$(ask "Hub bot's gecos (its IRC realname)")
-  [ -n "$net_nick" ] || net_nick=$(ask "Hub bot's nick now")
-  [ -n "$net_fp" ] || net_fp=$(ask "Hub's key (SHA256:...)")
-  [ -n "$net_server" ] || net_server=$(ask "IRC server for this shard (another server than the hub's)")
-  [ -n "$net_port" ] || net_port=$(ask "Port" 6697)
-  if [ "$net_port" = 6667 ] && $net_tls; then
-    [ "$(ask "Port 6667 is usually without TLS. Use TLS? (y/n)" n)" = y ] || net_tls=false
+  [ -t 0 ] || die "this asks questions: run it in a terminal (or use: bash setup.sh)"
+  while true; do
+    net_code=$(ask "Join code from the hub's owner (gemshard1:...; or Enter to type the details)")
+    [ -z "$net_code" ] && break
+    use_code "$net_code" && break
+  done
+  if [ -z "$net_fp" ]; then
+    echo "The hub's owner can give you these (SHARD INFO on the hub)."
+    net_network=$(ask_needed "Network (the hub's name for it, e.g. EFnet)")
+    net_gecos=$(ask_needed "Hub bot's gecos (its IRC realname)")
+    net_nick=$(ask_needed "Hub bot's nick now")
+    net_fp=$(ask_needed "Hub's key (SHA256:...)")
   fi
-  [ -n "$net_shard_nick" ] || net_shard_nick=$(ask "The shard's nick on $net_network")
+  net_server=$(ask_needed "IRC server for this shard on $net_network (another server than the hub's)")
+  while true; do
+    net_port=$(ask "Port" 6697)
+    [[ "$net_port" =~ ^[0-9]{1,5}$ ]] && break
+    echo "    (a number, e.g. 6697 or 6667)"
+  done
+  case "$(ask "Connect with TLS? (y/n)" "$([ "$net_port" = 6667 ] && echo n || echo y)")" in
+    n|N|no) net_tls=false ;;
+    *) net_tls=true ;;
+  esac
+  net_shard_nick=$(ask_needed "The shard's nick on $net_network")
 }
 
 network_args() {
@@ -223,8 +239,8 @@ hand_over() {
 cmd_setup() {
   local name=${1:-}
   check_name "$name"
-  shift
-  parse_network_options "$@"
+  [ $# -le 1 ] || die "setup takes only a name; it asks for the rest"
+  reset_network
   local dir
   dir=$(shard_dir "$name")
   [ ! -f "$dir/config.yml" ] || die "shard $name exists already (more networks: $PROG add-network $name)"
@@ -237,23 +253,28 @@ cmd_setup() {
   local fp
   fp=$(run_gemshard "$name" init /shard --name "$name" "${net_args[@]}" | sed -n 's/^This shard.s key: //p')
   [ -n "$fp" ] || die "making the shard's key failed"
-  info "Made $dir (the key is data/shard.key: back it up with: $PROG backup $name)"
+  if [ -n "${GEMSHARD_MENU:-}" ]; then
+    info "Made $dir (the key is data/shard.key; back it up from the menu: backup)"
+  else
+    info "Made $dir (the key is data/shard.key: back it up with: $PROG backup $name)"
+  fi
   echo
   hand_over "$name" "$fp"
-  echo "Then start the shard: $PROG start $name"
+  [ -n "${GEMSHARD_MENU:-}" ] || echo "Then start the shard: $PROG start $name"
 }
 
 cmd_add_network() {
   local name=${1:-}
   require_shard "$name"
-  shift
-  parse_network_options "$@"
+  [ $# -le 1 ] || die "add-network takes only a name; it asks for the rest"
+  reset_network
   ask_network
   [ -n "$net_network" ] || die "add-network needs --network NET"
   network_args
   run_gemshard "$name" add-network /shard/config.yml "${net_args[@]}"
   echo
   hand_over "$name" "$(run_gemshard "$name" fingerprint /shard/config.yml)"
+  [ -n "${GEMSHARD_MENU:-}" ] && return 0
   if is_running "$name"; then echo "Then apply it: $PROG restart $name"; else echo "Then start the shard: $PROG start $name"; fi
 }
 
