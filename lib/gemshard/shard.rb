@@ -12,6 +12,7 @@ module Gemshard
     RECHECK_EVERY = 60
     MAX_MODE_LINES = 12          # per channel in 30 seconds, so two bots can't fight forever
     STATUS_EVERY = 60
+    STATUS_FILE_EVERY = 30       # data/status.json, for the container's health check
 
     def initialize(config, logger: Logger.new($stdout))
       @config = config
@@ -30,6 +31,7 @@ module Gemshard
       @registered = false
       @status_sent = nil
       @status_at = 0
+      @status_file_at = nil
       @link = Link.new(config: config, identity: @identity, logger: logger,
                        irc_notice: ->(nick, line) { @irc&.write("NOTICE #{nick} :#{line}") }) { |m| @lock.synchronize { hub_message(m) } }
     end
@@ -247,6 +249,7 @@ module Gemshard
     def tick(last_recheck)
       @link.tick(irc_up: @registered)
       send_status
+      write_status_file if @status_file_at.nil? || now - @status_file_at >= STATUS_FILE_EVERY
       @due.select { |_, (at, _)| at <= now }.each do |key, (_, channel)|
         @due.delete(key)
         enforce(channel)
@@ -273,6 +276,20 @@ module Gemshard
       tmp = "#{state_path}.tmp"
       File.open(tmp, File::WRONLY | File::CREAT | File::TRUNC, 0o600) { |f| f.write(JSON.generate(@state)) }
       File.rename(tmp, state_path)
+    end
+
+    # What gemshard-docker status and the health check read.
+    def write_status_file
+      @status_file_at = now
+      status = { "name" => @config["name"], "network" => @config["network"],
+                 "irc" => @registered ? "connected" : "disconnected", "nick" => @nick, "server" => @server,
+                 "linked" => @link.linked?, "channels" => @roster.channels.size,
+                 "hub_channels" => Array(@state["channels"]).size, "updated_at_unix" => Time.now.to_i }
+      path = File.join(@config["data_dir"], "status.json")
+      File.open("#{path}.tmp", File::WRONLY | File::CREAT | File::TRUNC, 0o600) { |f| f.write(JSON.generate(status)) }
+      File.rename("#{path}.tmp", path)
+    rescue SystemCallError => e
+      @log.warn("Can't write #{path}: #{e.message}")
     end
 
     def channel?(name) = name.to_s.start_with?("#", "&", "!", "+")

@@ -1,0 +1,8 @@
+# Keep configs, keys and state out of the image build context.
+shards/
+config.yml
+data/
+*.key
+*.pem
+*.log
+.git/

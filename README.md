@@ -18,35 +18,79 @@ to nobody else: it answers no commands and doesn't take orders from users or fro
 other shards. It saves the last state it got, so it carries on from it while
 Gemdrop is gone.
 
-Ruby 3.2+ and its standard library only.
+A shard is for one IRC network. To help on several networks, run one shard per
+network: on one machine they each get their own folder and container.
 
-## Setting one up
+## Hosting a shard (Docker)
 
-1. On the machine for the shard:
+All you need is Docker, git and bash, and an IRC server of the network that
+the hub isn't on. Nothing listens on a port: the shard only connects out, to
+IRC. Ask the hub's owner for three things: the **network** name, the **hub's
+nick**, and the **hub's key** (`SHA256:...`).
+
+1. Get the code and set up the shard (pick a short name for it, e.g. your nick):
 
    ```
    git clone https://github.com/cban1980/gemshard && cd gemshard
-   bin/gemshard init myshard        # makes myshard/config.yml and the shard's key
+   bin/gemshard-docker setup myshard
    ```
 
-   It prints the shard's key fingerprint.
-
-2. On IRC, as a Gemdrop bot admin (Gemdrop needs its `shards` plugin):
+   It asks for the network, the hub's nick and key, your IRC server and the
+   shard's nick. Then it prints a line like this:
 
    ```
-   /msg Linuks SHARD INFO                          the hub's nick and key
-   /msg Linuks SHARD ADD myshard SHA256:...        the fingerprint from step 1
+   /msg Linuks SHARD ADD myshard SHA256:...
    ```
 
-3. Fill in `myshard/config.yml`:
-   - `name` and `network` (as on the hub);
-   - `hub_nick` and `hub_fingerprint` from `SHARD INFO`;
-   - `irc`: another server of the same network, and the shard's nick.
+2. Send that line to the hub's owner. They run it on IRC, and that lets your
+   shard link.
 
-4. Run it: `bin/gemshard myshard/config.yml` (in screen/tmux, or with systemd:
-   see below).
+3. Start it:
 
-`SHARD LIST` on the hub shows the shards, whether each is linked, and on which server.
+   ```
+   bin/gemshard-docker start myshard
+   bin/gemshard-docker status            # on IRC? linked to the hub?
+   ```
+
+   It keeps running, and starts again after a reboot.
+
+Everyday commands:
+
+| Command | Does |
+| --- | --- |
+| `bin/gemshard-docker status` | each shard: its IRC server and nick, linked or not, its channels |
+| `bin/gemshard-docker logs myshard -f` | follow its log |
+| `bin/gemshard-docker edit myshard` | change its config, then `restart myshard` |
+| `bin/gemshard-docker update` | get the latest version and restart the running shards |
+| `bin/gemshard-docker backup myshard` | archive the config and the key (keep it private) |
+| `bin/gemshard-docker stop myshard` | stop it (it quits IRC) |
+
+`bin/gemshard-docker help` lists everything. Each shard's files are in
+`shards/<name>/` (`config.yml`, and `data/` with the key and the saved state),
+readable only by you. The container runs as your user, read-only, with no
+privileges and 128 MB of memory.
+
+## For the hub's owner
+
+The hub is Gemdrop with its `shards` plugin:
+
+```
+/msg Linuks SHARD INFO                          the network, nick and key to hand out
+/msg Linuks SHARD ADD myshard SHA256:...        what the shard's host sends you
+/msg Linuks SHARD LIST                          the shards, linked or not, and their servers
+/msg Linuks SHARD DEL myshard                   unlink one for good
+```
+
+## Without Docker
+
+Ruby 3.2+ with its standard library is all a shard needs:
+
+```
+bin/gemshard init myshard           # makes myshard/config.yml and the shard's key
+$EDITOR myshard/config.yml          # name, network, hub_nick, hub_fingerprint, irc
+bin/gemshard check myshard/config.yml
+bin/gemshard myshard/config.yml     # run it (or with systemd: see below)
+```
 
 ## How it works
 

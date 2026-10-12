@@ -1,31 +1,68 @@
 #!/usr/bin/env ruby
-# gemshard init [DIR]          make a config and a key in DIR (default: here)
+# gemshard init [DIR] [--name N] [--network NET] [--hub-nick NICK] [--hub-fingerprint FP]
+#               [--server HOST] [--port N] [--no-tls] [--nick NICK]
+#                              make a config and a key in DIR (default: here)
 # gemshard fingerprint [CONFIG] the key's fingerprint, for SHARD ADD on the hub
+# gemshard check [CONFIG]      check the config without running
 # gemshard [CONFIG]            run (default: config.yml)
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 require "gemshard"
 require "fileutils"
+require "optparse"
 
 def die(message)
   warn "gemshard: #{message}"
   exit 1
 end
 
+# The example config with the given values filled in (comments kept).
+def filled_config(values)
+  text = File.read(File.expand_path("../config.example.yml", __dir__))
+  values.each do |key, value|
+    next if value.nil?
+
+    indent = %w[server port tls nick alt_nicks].include?(key) ? "  " : ""
+    shown = value.is_a?(String) || value.is_a?(Array) ? JSON.generate(value) : value.to_s
+    text = text.sub(/^#{indent}#{key}: [^#\n]*?(\s*#.*)?$/) { "#{indent}#{key}: #{shown}#{Regexp.last_match(1)}" }
+  end
+  text
+end
+
 case ARGV[0]
 when "init"
-  dir = ARGV[1] || "."
+  values = {}
+  args = OptionParser.new do |o|
+    o.on("--name N") { |v| values["name"] = v.downcase }
+    o.on("--network NET") { |v| values["network"] = v }
+    o.on("--hub-nick NICK") { |v| values["hub_nick"] = v }
+    o.on("--hub-fingerprint FP") { |v| values["hub_fingerprint"] = v }
+    o.on("--server HOST") { |v| values["server"] = v }
+    o.on("--port N", Integer) { |v| values["port"] = v }
+    o.on("--no-tls") { values["tls"] = false }
+    o.on("--nick NICK") { |v| values.update("nick" => v, "alt_nicks" => ["#{v}_", "#{v}2"]) }
+  end.parse(ARGV[1..])
+  dir = args.first || "."
   FileUtils.mkdir_p(dir)
   config = File.join(dir, "config.yml")
-  unless File.exist?(config)
-    File.write(config, File.read(File.expand_path("../config.example.yml", __dir__)), perm: 0o600)
-    puts "Wrote #{config}: fill in name, network, hub_nick, hub_fingerprint and irc."
+  if File.exist?(config)
+    puts "#{config} is there already; left as it is."
+  else
+    File.write(config, filled_config(values), perm: 0o600)
+    puts "Wrote #{config}."
   end
   key = Gemshard::Identity.load(File.join(dir, "data"))
   puts "This shard's key: #{Gemshard::Protocol.fingerprint(key)}"
-  puts "On the hub (as a bot admin): /msg <hub> SHARD ADD <name> #{Gemshard::Protocol.fingerprint(key)}"
 when "fingerprint"
   config = Gemshard::Config.load(ARGV[1] || "config.yml")
   puts Gemshard::Protocol.fingerprint(Gemshard::Identity.load(config["data_dir"]))
+when "check"
+  begin
+    config = Gemshard::Config.load(ARGV[1] || "config.yml")
+  rescue Gemshard::ConfigError => e
+    die e.message
+  end
+  puts "Config OK: shard #{config['name']} for #{config['network']}, hub #{config['hub_nick']}, " \
+       "IRC #{config.dig('irc', 'server')}:#{config.dig('irc', 'port')}#{' (TLS)' if config.dig('irc', 'tls')}"
 else
   begin
     config = Gemshard::Config.load(ARGV[0] || "config.yml")

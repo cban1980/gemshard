@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+# Set up, run and manage Gemshard shards in Docker containers.
+#
+# Each shard has its own folder, mounted at /shard in its container:
+#
+#   shards/<name>/config.yml   the shard's settings ("edit", then "restart")
+#   shards/<name>/data/        its key (shard.key: back it up!), saved state, status
+#
+# A shard is for one network. To help on several networks, set up one
+# shard per network; each runs in its own container.
+#
+# Needs only Docker, git and bash on the host.
+set -euo pipefail
+
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+PROG=$(basename "$0")
+HOME_DIR=${GEMSHARD_HOME:-$REPO/shards}
+IMAGE=${GEMSHARD_IMAGE:-gemshard:latest}
+BRANCH=${GEMSHARD_BRANCH:-main}
+NAME_RE='^[a-z0-9][a-z0-9_-]{0,31}$'
+
+usage() {
+  cat <<EOF
+Usage: $PROG <command> [options]
+
+Setting up a shard:
+  setup NAME [options]      make shards/NAME: its config and its key, then print
+                            what to send the hub's owner. Asks for what isn't given:
+      --network NET         the hub's name for the network (e.g. EFnet)
+      --hub-nick NICK       the hub bot's nick
+      --hub-fingerprint FP  the hub's key (SHA256:...), from the hub's owner
+      --server HOST         the IRC server this shard uses (not the hub's)
+      --port N              default 6697
+      --no-tls              plain IRC (default: TLS)
+      --nick NICK           the shard's nick on IRC
+  edit NAME                 open its config.yml in \$EDITOR and check it
+  check NAME                check its config.yml
+  fingerprint NAME          its key's fingerprint (for SHARD ADD on the hub)
+
+Running:
+  start NAME|--all [--debug]
+                            start a shard (or all of them); restarts on reboot
+  stop NAME|--all           stop (the shard quits IRC)
+  restart NAME|--all [--debug]
+  update [--no-pull]        pull \$GEMSHARD_BRANCH (default: main), rebuild, and
+                            restart the running shards
+
+Inspecting:
+  list                      the shards and whether they run
+  status [NAME]             IRC server and nick, linked to the hub, channels
+  logs NAME [-f] [-n N]     its log (-f follow, -n last N lines)
+
+Other:
+  build [--no-cache]        build the image (start does it when needed)
+  test                      run the test suite in a container
+  backup NAME [FILE]        archive config.yml and data/ (holds the shard's key:
+                            keep it private)
+  restore FILE              unpack a backup into shards/
+  remove NAME --yes         stop the shard and delete its folder and key
+  clean                     remove all shard containers and the images
+
+Shards folder: $HOME_DIR
+EOF
+}
+
+die() { echo "$PROG: $*" >&2; exit 1; }
+info() { echo "==> $*"; }
+
+[ "$(id -u)" -ne 0 ] || die "run this as your normal user (in the docker group), not as root"
+
+# --- helpers -------------------------------------------------------------------
+
+require_docker() {
+  command -v docker >/dev/null || die "docker is not installed"
+  docker info >/dev/null 2>&1 || die "cannot reach Docker; is the service running and are you in the docker group?"
+}
+
+check_name() {
+  [ -n "${1:-}" ] || die "which shard? (see: $PROG list)"
+  [[ "$1" =~ $NAME_RE ]] || die "a shard's name is 1-32 of a-z, 0-9, _ and - (it is also its name on the hub)"
+}
+
+shard_dir() { echo "$HOME_DIR/$1"; }
+container() { echo "gemshard-$1"; }
+
+require_shard() {
+  check_name "$1"
+  [ -f "$(shard_dir "$1")/config.yml" ] || die "no shard $1 (set one up with: $PROG setup $1)"
+}
+
+all_shards() {
+  local dir
+  for dir in "$HOME_DIR"/*/; do
+    [ -f "${dir}config.yml" ] && basename "$dir"
+  done
+  return 0
+}
+
+# One name, or every shard for --all.
+targets() {
+  if [ "${1:-}" = "--all" ]; then
+    all_shards
+  else
+    require_shard "${1:-}"
+    echo "$1"
+  fi
+}
+
+container_state() {
+  local state
+  if state=$(docker container inspect --format '{{.State.Status}}' "$(container "$1")" 2>/dev/null) && [ -n "$state" ]; then
+    echo "$state"
+  else
+    echo "absent"
+  fi
+}
+
+is_running() { [ "$(container_state "$1")" = "running" ]; }
+
+ensure_image() {
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || cmd_build
+}
+
+# Hardened options for every container that touches a shard's folder. It
+# runs as your user, so the files stay yours.
+run_opts() {
+  opts=(
+    --user "$(id -u):$(id -g)"
+    --volume "$(shard_dir "$1"):/shard"
+    --read-only
+    --tmpfs /tmp:rw,noexec,nosuid,nodev,size=8m
+    --cap-drop ALL
+    --security-opt no-new-privileges
+    --pids-limit 64
+    --memory 128m
+    --init
+  )
+}
+
+# The gemshard program on a shard's folder, in a throwaway container.
+run_gemshard() {
+  local name=$1
+  shift
+  ensure_image
+  run_opts "$name"
+  docker run --rm "${opts[@]}" "$IMAGE" "$@"
+}
+
+ask() {
+  local prompt=$1 default=${2:-} answer
+  if [ -n "$default" ]; then read -r -p "$prompt [$default]: " answer; else read -r -p "$prompt: " answer; fi
+  echo "${answer:-$default}"
+}
+
+# --- commands ----------------------------------------------------------------
+
+cmd_setup() {
+  local name=${1:-}
+  check_name "$name"
+  shift
+  local network="" hub_nick="" hub_fp="" server="" port="" tls=true nick=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --network|--hub-nick|--hub-fingerprint|--server|--port|--nick)
+        [ $# -ge 2 ] || die "$1 needs a value"
+        case "$1" in
+          --network) network=$2 ;; --hub-nick) hub_nick=$2 ;; --hub-fingerprint) hub_fp=$2 ;;
+          --server) server=$2 ;; --port) port=$2 ;; --nick) nick=$2 ;;
+        esac
+        shift 2 ;;
+      --no-tls) tls=false; shift ;;
+      *) die "setup: unknown option $1" ;;
+    esac
+  done
+  local dir
+  dir=$(shard_dir "$name")
+  [ ! -f "$dir/config.yml" ] || die "shard $name exists already (change it with: $PROG edit $name)"
+
+  if [ -t 0 ]; then
+    echo "Setting up shard $name. The hub's owner can give you the network, hub nick and hub key."
+    [ -n "$network" ] || network=$(ask "Network (the hub's name for it, e.g. EFnet)")
+    [ -n "$hub_nick" ] || hub_nick=$(ask "Hub bot's nick")
+    [ -n "$hub_fp" ] || hub_fp=$(ask "Hub's key (SHA256:...)")
+    [ -n "$server" ] || server=$(ask "IRC server for this shard (another server than the hub's)")
+    [ -n "$port" ] || port=$(ask "Port" 6697)
+    if [ "$port" = 6667 ] && $tls; then
+      [ "$(ask "Port 6667 is usually without TLS. Use TLS? (y/n)" n)" = y ] || tls=false
+    fi
+    [ -n "$nick" ] || nick=$(ask "The shard's nick on IRC")
+  fi
+  [ -z "$port" ] || [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "the port is a number"
+
+  local args=(init /shard --name "$name")
+  [ -z "$network" ] || args+=(--network "$network")
+  [ -z "$hub_nick" ] || args+=(--hub-nick "$hub_nick")
+  [ -z "$hub_fp" ] || args+=(--hub-fingerprint "$hub_fp")
+  [ -z "$server" ] || args+=(--server "$server")
+  [ -z "$port" ] || args+=(--port "$port")
+  $tls || args+=(--no-tls)
+  [ -z "$nick" ] || args+=(--nick "$nick")
+
+  mkdir -p "$dir"
+  chmod 700 "$HOME_DIR" "$dir"
+  local fp
+  fp=$(run_gemshard "$name" "${args[@]}" | sed -n 's/^This shard.s key: //p')
+  [ -n "$fp" ] || die "making the shard's key failed"
+  info "Made $dir (the key is data/shard.key: back it up with: $PROG backup $name)"
+  echo
+  if run_gemshard "$name" check /shard/config.yml >/dev/null 2>&1; then
+    echo "Send this to the hub's owner, to run as a bot admin on IRC:"
+    echo
+    echo "    /msg ${hub_nick:-<hub>} SHARD ADD $name $fp"
+    echo
+    echo "Then start the shard: $PROG start $name"
+  else
+    echo "The config isn't complete yet: $PROG edit $name"
+    echo "Its key, for the hub's owner: $fp"
+  fi
+}
+
+cmd_edit() {
+  local name=${1:-}
+  require_shard "$name"
+  "${EDITOR:-vi}" "$(shard_dir "$name")/config.yml"
+  cmd_check "$name" || return 1
+  if is_running "$name"; then echo "Apply it with: $PROG restart $name"; fi
+}
+
+cmd_check() {
+  require_shard "${1:-}"
+  run_gemshard "$1" check /shard/config.yml
+}
+
+cmd_fingerprint() {
+  require_shard "${1:-}"
+  run_gemshard "$1" fingerprint /shard/config.yml
+}
+
+start_one() {
+  local name=$1 log_level=$2
+  case "$(container_state "$name")" in
+    running) echo "$name is running already"; return ;;
+    absent) ;;
+    *) docker rm "$(container "$name")" >/dev/null ;;
+  esac
+  run_gemshard "$name" check /shard/config.yml >/dev/null || die "$name: the config isn't right (details: $PROG check $name)"
+  run_opts "$name"
+  docker run --detach --restart unless-stopped \
+    --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
+    "${opts[@]}" --name "$(container "$name")" --label "gemshard.shard=$name" \
+    --env GEMSHARD_LOG_LEVEL="$log_level" "$IMAGE" /shard/config.yml >/dev/null
+  info "Started $name"
+}
+
+stop_one() {
+  local name=$1
+  case "$(container_state "$name")" in
+    absent) echo "$name isn't running" ;;
+    running)
+      docker stop --time 10 "$(container "$name")" >/dev/null
+      docker rm "$(container "$name")" >/dev/null 2>&1 || true
+      info "Stopped $name" ;;
+    *) docker rm "$(container "$name")" >/dev/null 2>&1 || true ;;
+  esac
+}
+
+# start/stop/restart NAME|--all [--debug]
+cmd_run() {
+  local action=$1 which=${2:-} log_level=${GEMSHARD_LOG_LEVEL:-info}
+  [ -n "$which" ] || die "$action which shard? (a name, or --all)"
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --debug) log_level=debug; shift ;;
+      *) die "$action: unknown option $1" ;;
+    esac
+  done
+  [ "$which" = "--all" ] || require_shard "$which"
+  local names
+  names=$(targets "$which")
+  [ -n "$names" ] || die "no shards yet (set one up with: $PROG setup NAME)"
+  [ "$action" = stop ] || ensure_image
+  local name
+  for name in $names; do
+    case "$action" in
+      start) start_one "$name" "$log_level" ;;
+      stop) stop_one "$name" ;;
+      restart) stop_one "$name" >/dev/null; start_one "$name" "$log_level" ;;
+    esac
+  done
+}
+
+cmd_list() {
+  local names name
+  names=$(all_shards)
+  [ -n "$names" ] || { echo "No shards yet (set one up with: $PROG setup NAME)."; return; }
+  for name in $names; do
+    local state
+    state=$(container_state "$name")
+    printf '%-20s %s\n' "$name" "${state/absent/not running}"
+  done
+}
+
+cmd_status() {
+  local names name
+  if [ -n "${1:-}" ]; then require_shard "$1"; names=$1; else names=$(all_shards); fi
+  [ -n "$names" ] || { echo "No shards yet."; return; }
+  for name in $names; do
+    if ! is_running "$name"; then
+      echo "$name: not running"
+      continue
+    fi
+    local health
+    health=$(docker container inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$(container "$name")")
+    docker exec "$(container "$name")" ruby -rjson -e '
+      s = JSON.parse(File.read("/shard/data/status.json")) rescue (puts "#{ARGV[0]}: starting"; exit)
+      age = Time.now.to_i - s["updated_at_unix"]
+      irc = s["irc"] == "connected" ? "on IRC as #{s["nick"]} (#{s["server"]})" : "not on IRC"
+      hub = s["linked"] ? "linked to the hub" : "not linked to the hub#{" (enforcing from the saved state)" if s["hub_channels"] > 0}"
+      puts "#{ARGV[0]} (#{s["network"]}): #{irc}; #{hub}; in #{s["channels"]} of the hub'"'"'s #{s["hub_channels"]} channels" \
+           "#{"; health: #{ARGV[1]}" unless ARGV[1].to_s.empty?}#{"; status #{age} s old" if age > 90}"
+    ' "$name" "$health"
+  done
+}
+
+cmd_logs() {
+  local name=${1:-}
+  require_shard "$name"
+  shift
+  local args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -f) args+=(--follow); shift ;;
+      -n) [ $# -ge 2 ] || die "-n needs a number"; args+=(--tail "$2"); shift 2 ;;
+      *) die "logs: unknown option $1" ;;
+    esac
+  done
+  [ "$(container_state "$name")" != absent ] || die "$name isn't running (no log)"
+  docker logs "${args[@]}" "$(container "$name")"
+}
+
+cmd_build() {
+  local opts=(--pull)
+  [ "${1:-}" != "--no-cache" ] || opts+=(--no-cache)
+  info "Building $IMAGE (debian:trixie-slim, Ruby 3.3)"
+  docker build "${opts[@]}" --target runtime --tag "$IMAGE" "$REPO"
+}
+
+cmd_test() {
+  info "Running the tests"
+  docker build --quiet --target test --tag "${IMAGE%:*}:test" "$REPO" >/dev/null
+  docker run --rm --read-only --tmpfs /tmp:rw,size=64m --user "$(id -u):$(id -g)" "${IMAGE%:*}:test"
+}
+
+# Fast-forwards the repo to origin/$BRANCH; sets pulled=true if it moved.
+pull_repo() {
+  command -v git >/dev/null || die "git is not installed"
+  git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$REPO is not a git checkout (or pass --no-pull)"
+  local branch before after
+  branch=$(git -C "$REPO" symbolic-ref --quiet --short HEAD) || die "$REPO is not on a branch; check out $BRANCH first"
+  [ "$branch" = "$BRANCH" ] || die "$REPO is on branch $branch, not $BRANCH (or pass --no-pull)"
+  [ -z "$(git -C "$REPO" status --porcelain --untracked-files=no)" ] || die "$REPO has uncommitted changes"
+  before=$(git -C "$REPO" rev-parse HEAD)
+  info "Pulling $BRANCH from origin"
+  git -C "$REPO" pull --ff-only --quiet origin "$BRANCH" || die "pull failed; nothing rebuilt"
+  after=$(git -C "$REPO" rev-parse HEAD)
+  if [ "$before" = "$after" ]; then
+    pulled=false
+    echo "    already up to date ($(git -C "$REPO" log -1 --format='%h %s'))"
+  else
+    pulled=true
+    git -C "$REPO" log --oneline "$before..$after" | sed 's/^/    /'
+  fi
+}
+
+cmd_update() {
+  local pull=true pulled=false
+  [ "${1:-}" != "--no-pull" ] || pull=false
+  $pull && pull_repo
+  # The pull may have changed this script too; finish with the new version.
+  if $pulled; then exec "$REPO/bin/$PROG" update --no-pull; fi
+  cmd_build
+  local name
+  for name in $(all_shards); do
+    if is_running "$name"; then
+      stop_one "$name" >/dev/null
+      start_one "$name" "${GEMSHARD_LOG_LEVEL:-info}"
+    fi
+  done
+}
+
+cmd_backup() {
+  local name=${1:-}
+  require_shard "$name"
+  local file=${2:-gemshard-$name-$(date +%Y%m%d-%H%M%S).tar.gz}
+  (umask 077 && tar -czf "$file" -C "$HOME_DIR" --exclude "$name/data/status.json" "$name/config.yml" "$name/data")
+  info "Wrote $file (it holds the shard's key: keep it private)"
+}
+
+cmd_restore() {
+  local file=${1:-}
+  [ -f "$file" ] || die "restore needs a backup file"
+  local name
+  name=$(tar -tzf "$file" | head -1 | cut -d/ -f1)
+  check_name "$name"
+  tar -tzf "$file" | grep -qv "^$name/" && die "$file isn't a shard backup"
+  [ ! -e "$(shard_dir "$name")" ] || die "shard $name exists already; remove it first"
+  mkdir -p "$HOME_DIR"
+  chmod 700 "$HOME_DIR"
+  tar -xzf "$file" -C "$HOME_DIR"
+  info "Restored shard $name; start it with: $PROG start $name"
+}
+
+cmd_remove() {
+  local name=${1:-}
+  require_shard "$name"
+  [ "${2:-}" = "--yes" ] || die "this deletes shard $name's key for good; to go ahead: $PROG remove $name --yes"
+  stop_one "$name" >/dev/null
+  rm -rf "$(shard_dir "$name")"
+  info "Removed shard $name (the hub's owner can now run: SHARD DEL $name)"
+}
+
+cmd_clean() {
+  local ids
+  ids=$(docker ps -aq --filter label=gemshard.shard)
+  [ -z "$ids" ] || docker rm -f $ids >/dev/null
+  docker image rm "$IMAGE" "${IMAGE%:*}:test" >/dev/null 2>&1 || true
+  info "Removed the shard containers and images (the shards folder is kept)"
+}
+
+# --- dispatch ------------------------------------------------------------------
+
+command=${1:-help}
+[ $# -eq 0 ] || shift
+case "$command" in
+  help|-h|--help) usage; exit 0 ;;
+  backup|restore) ;;
+  list|setup|edit|check|fingerprint|start|stop|restart|update|status|logs|build|test|remove|clean) require_docker ;;
+  *) echo "$PROG: unknown command '$command'" >&2; usage >&2; exit 1 ;;
+esac
+case "$command" in
+  setup) cmd_setup "$@" ;;
+  edit) cmd_edit "$@" ;;
+  check) cmd_check "$@" ;;
+  fingerprint) cmd_fingerprint "$@" ;;
+  start|stop|restart) cmd_run "$command" "$@" ;;
+  update) cmd_update "$@" ;;
+  list) cmd_list ;;
+  status) cmd_status "$@" ;;
+  logs) cmd_logs "$@" ;;
+  build) cmd_build "$@" ;;
+  test) cmd_test ;;
+  backup) cmd_backup "$@" ;;
+  restore) cmd_restore "$@" ;;
+  remove) cmd_remove "$@" ;;
+  clean) cmd_clean ;;
+esac
