@@ -24,6 +24,9 @@ network has its own IRC connection, hub link and saved state.
 
 ## Hosting a shard (Docker)
 
+Handing a shard to someone else to run? [HOSTING.md](HOSTING.md) has both sides:
+what the hub's owner sends and runs, and what the host sets up.
+
 All you need is Docker, git and bash, and an IRC server of the network that
 the hub isn't on. Nothing listens on a port: the shard only connects out, to
 IRC. Ask the hub's owner for what `SHARD INFO` shows them: the **network** name,
