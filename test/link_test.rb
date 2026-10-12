@@ -1,5 +1,4 @@
 require "test_helper"
-require "socket"
 
 class LinkTest < Minitest::Test
   def setup
@@ -12,14 +11,11 @@ class LinkTest < Minitest::Test
   end
 
   def teardown
-    @link&.stop
-    @server&.close
     FileUtils.remove_entry(@dir)
   end
 
-  def link(hub_fingerprint: @hub.fingerprint, address: nil)
-    config = { "name" => "slay", "network" => "EFnet", "hub_nick" => "Linuks", "hub_fingerprint" => hub_fingerprint,
-               "hub_address" => address }
+  def link(hub_fingerprint: @hub.fingerprint)
+    config = { "name" => "slay", "network" => "EFnet", "hub_nick" => "Linuks", "hub_fingerprint" => hub_fingerprint }
     @link = Gemshard::Link.new(config: config, identity: @identity, logger: Logger.new(@log),
                                irc_notice: ->(nick, line) { @notices << [nick, line] }) { |m| @messages << m }
   end
@@ -38,7 +34,6 @@ class LinkTest < Minitest::Test
     refute @link.linked?
     irc_handshake
     assert @link.linked?
-    assert_equal :irc, @link.transport
     assert_equal "linked", @messages.pop["t"]
     P.irc_lines(@hub.session.id, @hub.session.seal("t" => "state", "channels" => [])).each { |l| @link.irc_line("Linuks", l) }
     assert_equal "state", @messages.pop["t"]
@@ -68,38 +63,16 @@ class LinkTest < Minitest::Test
     assert @messages.empty?
   end
 
-  def test_links_over_tls_first
-    @server = TCPServer.new("127.0.0.1", 0)
-    port = @server.addr[1]
-    ctx = OpenSSL::SSL::SSLContext.new
-    ctx.min_version = OpenSSL::SSL::TLS1_3_VERSION
-    key = OpenSSL::PKey::EC.generate("prime256v1")
-    cert = OpenSSL::X509::Certificate.new
-    cert.version = 2
-    cert.serial = 1
-    cert.subject = cert.issuer = OpenSSL::X509::Name.parse("/CN=hub")
-    cert.public_key = key
-    cert.not_before = Time.now - 60
-    cert.not_after = Time.now + 3600
-    cert.sign(key, OpenSSL::Digest.new("SHA256"))
-    ctx.key = key
-    ctx.cert = cert
-    hub = Thread.new do
-      socket = OpenSSL::SSL::SSLSocket.new(@server.accept, ctx)
-      socket.accept
-      socket.write("#{@hub.welcome_for(socket.gets.chomp)}\n")
-      socket.write("#{@hub.session.seal('t' => 'state', 'channels' => [])}\n")
-      socket.gets
-    end
-    link(address: "127.0.0.1:#{port}")
-    @link.start
-    assert_equal "linked", @messages.pop["t"]
-    assert_equal :tcp, @link.transport
-    assert_equal "state", @messages.pop["t"]
-    @link.to_hub("t" => "pong")
-    assert_equal "pong", @hub.session.open(hub.value.chomp)["t"]
+  def test_the_hub_quitting_ends_the_session_and_we_say_hello_again
+    link
+    irc_handshake
+    @messages.pop
+    @notices.clear
+    @link.hub_quit
+    assert_equal "unlinked", @messages.pop["t"]
+    refute @link.linked?
     @link.tick(irc_up: true)
-    assert_empty @notices, "no hellos over IRC while the TLS link is up"
+    refute_empty @notices, "a new hello right away"
   end
 
   def test_a_quiet_hub_ends_the_session

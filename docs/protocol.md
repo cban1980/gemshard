@@ -67,18 +67,17 @@ against the signature.
 | From | Message |
 | --- | --- |
 | hub | `{"t":"state", "network", "hub":{nick,userhost}, "bots":[{name,nick,userhost,server}], "admins":[…], "channels":[{name,key,access:{account:level},masks:[[mask,level]],mlock}], "sessions":[{nick,userhost,account}]}`, sent when it changes |
-| hub | `{"t":"ping"}`, every 20 s (TLS) or 120 s (IRC) |
-| shard | `{"t":"status","nick","userhost","server"}`, when it changes |
+| hub | `{"t":"ping"}`, every 120 s |
+| shard | `{"t":"status","nick","userhost","server"}`, when it changes (the hub takes nick and user@host from the lines themselves) |
 | shard | `{"t":"pong"}` |
 
-A session ends when nothing has arrived for 70 seconds (TLS) or 330 seconds
-(IRC); the shard then starts a new one.
+A session ends when nothing has arrived for 330 seconds; the shard then starts a
+new one.
 
-## Transports
+## Transport
 
-- **The TLS link** (the hub's `listen`, port 7700): TLS 1.3, with one message
-  per line. The first line each way is the signed hello and welcome. The hub's
-  certificate is a throwaway: who is who is settled by the signed messages.
+The link runs over IRC only: nothing listens on a port.
+
 - **IRC:** NOTICEs to the other side's nick. Each line is
   `GS1 <tag> <message id> <part>/<total> <base64 chunk>`, with chunks of up to
   300 characters and at most 64 parts. The tag is `h` for the handshake (the

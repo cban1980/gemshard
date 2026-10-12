@@ -6,8 +6,8 @@ require "securerandom"
 require "zlib"
 
 module Gemshard
-  # The secure layer between a shard and its hub, the same over IRC notices
-  # and over the TLS link (docs/protocol.md). This file is also in Gemdrop's
+  # The secure layer between a shard and its hub, over IRC notices
+  # (docs/protocol.md). This file is also in Gemdrop's
   # shards plugin; keep the two the same.
   #
   # Each side has an Ed25519 identity key; the other side pins its

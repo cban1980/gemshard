@@ -34,27 +34,26 @@ Ruby 3.2+ and its standard library only.
 2. On IRC, as a Gemdrop bot admin (Gemdrop needs its `shards` plugin):
 
    ```
-   /msg Linuks SHARD INFO                          the hub's nick, key and address
+   /msg Linuks SHARD INFO                          the hub's nick and key
    /msg Linuks SHARD ADD myshard SHA256:...        the fingerprint from step 1
    ```
 
 3. Fill in `myshard/config.yml`:
    - `name` and `network` (as on the hub);
    - `hub_nick` and `hub_fingerprint` from `SHARD INFO`;
-   - `hub_address` for the TLS link, if this machine can reach it;
    - `irc`: another server of the same network, and the shard's nick.
 
 4. Run it: `bin/gemshard myshard/config.yml` (in screen/tmux, or with systemd:
    see below).
 
-`SHARD LIST` on the hub shows the shards, how each is linked, and on which server.
+`SHARD LIST` on the hub shows the shards, whether each is linked, and on which server.
 
 ## How it works
 
-**Linking to the hub.** A shard uses the hub's TLS link (port 7700) when it can
-reach it, and otherwise sends encrypted NOTICEs to the hub's nick over IRC. On IRC
-the hub only sends the state when it changed, at most every 10 seconds, to stay
-within flood limits.
+**Linking to the hub.** A shard talks to the hub only over IRC, with encrypted
+NOTICEs to the hub's nick; nothing listens on a port on either side. The hub only
+sends the state when it changed, at most every 10 seconds, to stay within flood
+limits.
 
 **Which bot acts.** In each channel, only one bot sets modes: the hub if it is
 there with op, else the opped shard first by name. Every bot can see on IRC who is

@@ -8,8 +8,6 @@ network: EFnet
 # The hub (Gemdrop with the shards plugin): /msg <hub> SHARD INFO shows these.
 hub_nick: Linuks
 hub_fingerprint: "SHA256:..."
-# The hub's TLS link, if you can reach it (faster); leave out for IRC only.
-# hub_address: gemdrop.example.net:7700
 
 irc:
   server: irc.example.net   # another server on the same network than the hub's

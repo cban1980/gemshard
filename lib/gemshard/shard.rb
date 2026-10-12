@@ -11,7 +11,7 @@ module Gemshard
     ENFORCE_DELAY = (1.5..4.0)   # seconds after a change, so bots don't all jump at once
     RECHECK_EVERY = 60
     MAX_MODE_LINES = 12          # per channel in 30 seconds, so two bots can't fight forever
-    STATUS_OVER_IRC_EVERY = 60
+    STATUS_EVERY = 60
 
     def initialize(config, logger: Logger.new($stdout))
       @config = config
@@ -41,7 +41,6 @@ module Gemshard
     def run
       @log.info("Gemshard #{@config['name']} for #{@config['network']}; key #{fingerprint}")
       @log.info("Using the saved state (#{@state['channels'].size} channels) until the hub is linked") if @state["channels"]&.any?
-      @link.start
       @timer = Thread.new { timer_loop }
       delay = 5
       loop do
@@ -61,7 +60,6 @@ module Gemshard
       @irc&.write("QUIT :#{reason}", urgent: true)
       sleep 1
       @irc&.close
-      @link.stop
     end
 
     # --- IRC ------------------------------------------------------------------------------------
@@ -153,6 +151,7 @@ module Gemshard
       @roster.quit(nick)
       # A quit ends a login: until the hub says otherwise, they are logged out.
       @state["sessions"]&.reject! { |s| same?(s["nick"], nick) }
+      @link.hub_quit if same?(nick, @config["hub_nick"])
     end
 
     def renamed(old, new)
@@ -186,7 +185,7 @@ module Gemshard
 
       now_status = status
       return if now_status == @status_sent
-      return if @link.transport == :irc && now - @status_at < STATUS_OVER_IRC_EVERY && @status_sent
+      return if now - @status_at < STATUS_EVERY && @status_sent
 
       @status_sent = now_status if @link.to_hub(now_status)
       @status_at = now

@@ -35,9 +35,6 @@ module Gemshard
       unless config["hub_fingerprint"].to_s.match?(FINGERPRINT)
         raise ConfigError, "hub_fingerprint: SHA256:... (SHARD INFO on the hub)"
       end
-      if config["hub_address"] && !config["hub_address"].to_s.match?(/\A\S+:\d{1,5}\z/)
-        raise ConfigError, "hub_address: host:port of the hub's TLS link (or leave it out: IRC only)"
-      end
       raise ConfigError, "irc: server is needed" if config.dig("irc", "server").to_s.empty?
     end
   end
