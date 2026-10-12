@@ -12,7 +12,7 @@ class ShardTest < Minitest::Test
 
   def setup
     @dir = Dir.mktmpdir("gemshard")
-    @config = { "name" => "one", "network" => "EFnet", "hub_nick" => "Linuks",
+    @config = { "name" => "one", "network" => "EFnet", "hub_nick" => "Linuks", "hub_gecos" => "Gemdrop IRC bot",
                 "hub_fingerprint" => "SHA256:#{'A' * 43}", "data_dir" => @dir,
                 "irc" => { "server" => "irc.example", "port" => 6697, "tls" => true, "tls_verify" => true,
                            "nick" => "Shard1", "alt_nicks" => [], "user" => "shard", "realname" => "Shard" } }
@@ -96,6 +96,39 @@ class ShardTest < Minitest::Test
     @shard.instance_variable_get(:@rejoin).transform_values! { 0 }
     @shard.tick(Process.clock_gettime(Process::CLOCK_MONOTONIC))
     assert_includes @irc.lines, "JOIN #chan sesame"
+  end
+
+  def test_the_hub_is_found_again_by_its_gecos
+    state = JSON.parse(JSON.generate(STATE))
+    state["hub"]["gecos"] = "Gemdrop IRC bot"
+    @shard.hub_message(state)
+    in_chan
+    line(":Linuks!bot@hub.example JOIN #chan")
+    line(":Linuks!bot@hub.example QUIT :gone")
+    line(":Imposter!x@evil.example JOIN #chan")
+    line(":Gnistan!bot@hub2.example JOIN #chan")
+    assert_includes @irc.lines, "WHO Gnistan", "the hub is missing: newcomers' gecos are asked"
+    line(":irc.example 352 Shard1 #chan x evil.example irc.example Imposter H :0 Someone else")
+    line(":irc.example 352 Shard1 #chan bot hub2.example irc.example Gnistan H :0 Gemdrop IRC bot")
+    assert_equal "Gnistan", @shard.hub_target
+    @irc.lines.clear
+    line(":Gnistan!bot@hub2.example NICK :Linuks2")
+    assert_equal "Linuks2", @shard.hub_target, "followed through a nick change"
+    assert_equal "Linuks", @shard.state["hub"]["nick"], "a gecos is only where to say hello: being the hub takes the key"
+    line(":Linuks2!bot@hub2.example MODE #chan -o Shard1") # (not opped, so nothing is set)
+    @shard.instance_variable_get(:@roster).member("#chan", "Shard1")[:modes] << "o"
+    enforce_now
+    refute_includes @irc.lines, "MODE #chan +o Linuks2", "no op for a gecos alone"
+  end
+
+  def test_someone_on_the_hubs_old_nick_isnt_the_hub
+    @shard.hub_message(JSON.parse(JSON.generate(STATE)))
+    in_chan
+    line(":Linuks!x@evil.example JOIN #chan")
+    line(":Real!bot@hub.example JOIN #chan")
+    line(":irc.example 352 Shard1 #chan x evil.example irc.example Linuks H :0 Not the hub")
+    line(":irc.example 352 Shard1 #chan bot hub.example irc.example Real H :0 Gemdrop IRC bot")
+    assert_equal "Real", @shard.hub_target
   end
 
   def test_shards_say_nothing_to_anyone

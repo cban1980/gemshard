@@ -13,6 +13,7 @@ module Gemshard
     MAX_MODE_LINES = 12          # per channel in 30 seconds, so two bots can't fight forever
     STATUS_EVERY = 60
     STATUS_FILE_EVERY = 30       # data/status.json, for the container's health check
+    WHO_AGAIN = 300              # seconds before asking a nick's gecos again
 
     def initialize(config, logger: Logger.new($stdout))
       @config = config
@@ -32,8 +33,13 @@ module Gemshard
       @status_sent = nil
       @status_at = 0
       @status_file_at = nil
+      @hub_nick = @state.dig("hub", "nick") || config["hub_nick"]
+      @who_asked = {}
       @link = Link.new(config: config, identity: @identity, logger: logger,
-                       irc_notice: ->(nick, line) { @irc&.write("NOTICE #{nick} :#{line}") }) { |m| @lock.synchronize { hub_message(m) } }
+                       irc_notice: ->(nick, line) { @irc&.write("NOTICE #{nick} :#{line}") },
+                       hub_nick: -> { hub_target }, found_hub: ->(nick) { found_hub(nick) }) do |m|
+        @lock.synchronize { hub_message(m) }
+      end
     end
 
     attr_reader :state, :roster, :nick
@@ -111,7 +117,9 @@ module Gemshard
         @roster.mode(msg.params[0], msg.params[1], msg.params[2..])
         schedule(msg.params[0])
       when "353" then @roster.names(msg.params[2], msg.text)
-      when "352" then @roster.who(msg.params[1], msg.params[2], msg.params[3], msg.params[5], msg.params[6])
+      when "352"
+        @roster.who(msg.params[1], msg.params[2], msg.params[3], msg.params[5], msg.params[6], msg.text.split(" ", 2)[1])
+        @link.hello_soon if same?(msg.params[5], @roster.nick_with_gecos(hub_gecos)) && !same?(msg.params[5], @hub_nick)
       when "324"
         @roster.channel_modes(msg.params[1], msg.params[2], msg.params[3..])
         schedule(msg.params[1])
@@ -136,8 +144,19 @@ module Gemshard
         @irc.write("WHO #{channel}")
       else
         @roster.add(channel, msg.nick, msg.userhost)
+        ask_gecos(msg.nick)
       end
       schedule(channel)
+    end
+
+    # While the hub is missing, newcomers' gecos: the hub may be back under
+    # another nick.
+    def ask_gecos(nick)
+      return if @link.linked? || @roster.present?(@hub_nick) || @roster.gecos_known?(nick)
+      return if (@who_asked[Roster.fold(nick)] || -WHO_AGAIN) > now - WHO_AGAIN
+
+      @who_asked[Roster.fold(nick)] = now
+      @irc.write("WHO #{nick}")
     end
 
     def left(channel, nick, kicked: false)
@@ -153,22 +172,51 @@ module Gemshard
       @roster.quit(nick)
       # A quit ends a login: until the hub says otherwise, they are logged out.
       @state["sessions"]&.reject! { |s| same?(s["nick"], nick) }
-      @link.hub_quit if same?(nick, @config["hub_nick"])
+      @link.hub_quit if same?(nick, @hub_nick)
     end
 
     def renamed(old, new)
       @roster.rename(old, new)
       @nick = new if same?(old, @nick)
+      @hub_nick = new if same?(old, @hub_nick)
       @state["sessions"]&.each { |s| s["nick"] = new if same?(s["nick"], old) }
+      [@state["hub"], *@state["bots"]].compact.each { |b| b["nick"] = new if same?(b["nick"], old) }
       @roster.channels.each { |channel| schedule(channel) }
     end
 
     # --- the hub ---------------------------------------------------------------------------------
 
+    # The hub is known by its gecos (its nick may change): the hub's state
+    # says what it is now, the config what it was set up with.
+    def hub_gecos = @state.dig("hub", "gecos") || @config["hub_gecos"]
+
+    # Where to find the hub: its nick if it is around, else whoever has its
+    # gecos, else its last known nick.
+    def hub_target
+      gecos = @roster.gecos_of(@hub_nick)
+      return @hub_nick if @roster.present?(@hub_nick) && (gecos.nil? || gecos.strip.casecmp?(hub_gecos.to_s.strip))
+
+      found = @roster.nick_with_gecos(hub_gecos)
+      if found && !same?(found, @hub_nick)
+        @log.info("The hub may be #{found} now (its gecos)")
+        @hub_nick = found
+      end
+      @hub_nick
+    end
+
+    # A message that only the hub could have made came from nick.
+    def found_hub(nick)
+      return if same?(nick, @hub_nick)
+
+      @log.info("The hub is #{nick} now")
+      @hub_nick = nick
+    end
+
     def hub_message(message)
       case message["t"]
       when "state"
         @state = message
+        @hub_nick = message.dig("hub", "nick") || @hub_nick
         save_state
         @log.info("The hub's state: #{@state['channels'].size} channels, #{Array(@state['bots']).size} shards")
         sync_channels

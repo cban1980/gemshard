@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# gemshard init [DIR] [--name N] [--network NET] [--hub-nick NICK] [--hub-fingerprint FP]
+# gemshard init [DIR] [--name N] [--network NET] [--hub-gecos TEXT] [--hub-nick NICK] [--hub-fingerprint FP]
 #               [--server HOST] [--port N] [--no-tls] [--nick NICK]
 #                              make a config and a key in DIR (default: here)
 # gemshard fingerprint [CONFIG] the key's fingerprint, for SHARD ADD on the hub
@@ -34,6 +34,7 @@ when "init"
   args = OptionParser.new do |o|
     o.on("--name N") { |v| values["name"] = v.downcase }
     o.on("--network NET") { |v| values["network"] = v }
+    o.on("--hub-gecos TEXT") { |v| values["hub_gecos"] = v }
     o.on("--hub-nick NICK") { |v| values["hub_nick"] = v }
     o.on("--hub-fingerprint FP") { |v| values["hub_fingerprint"] = v }
     o.on("--server HOST") { |v| values["server"] = v }
@@ -61,7 +62,8 @@ when "check"
   rescue Gemshard::ConfigError => e
     die e.message
   end
-  puts "Config OK: shard #{config['name']} for #{config['network']}, hub #{config['hub_nick']}, " \
+  puts "Config OK: shard #{config['name']} for #{config['network']}, hub \"#{config['hub_gecos']}\"" \
+       "#{" (first looked for as #{config['hub_nick']})" if config['hub_nick']}, " \
        "IRC #{config.dig('irc', 'server')}:#{config.dig('irc', 'port')}#{' (TLS)' if config.dig('irc', 'tls')}"
 else
   begin

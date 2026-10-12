@@ -27,7 +27,8 @@ Setting up a shard:
   setup NAME [options]      make shards/NAME: its config and its key, then print
                             what to send the hub's owner. Asks for what isn't given:
       --network NET         the hub's name for the network (e.g. EFnet)
-      --hub-nick NICK       the hub bot's nick
+      --hub-gecos TEXT      the hub bot's gecos (IRC realname): shards know it by that
+      --hub-nick NICK       the hub bot's nick now (where to look for it first)
       --hub-fingerprint FP  the hub's key (SHA256:...), from the hub's owner
       --server HOST         the IRC server this shard uses (not the hub's)
       --port N              default 6697
@@ -158,13 +159,13 @@ cmd_setup() {
   local name=${1:-}
   check_name "$name"
   shift
-  local network="" hub_nick="" hub_fp="" server="" port="" tls=true nick=""
+  local network="" hub_gecos="" hub_nick="" hub_fp="" server="" port="" tls=true nick=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --network|--hub-nick|--hub-fingerprint|--server|--port|--nick)
+      --network|--hub-gecos|--hub-nick|--hub-fingerprint|--server|--port|--nick)
         [ $# -ge 2 ] || die "$1 needs a value"
         case "$1" in
-          --network) network=$2 ;; --hub-nick) hub_nick=$2 ;; --hub-fingerprint) hub_fp=$2 ;;
+          --network) network=$2 ;; --hub-gecos) hub_gecos=$2 ;; --hub-nick) hub_nick=$2 ;; --hub-fingerprint) hub_fp=$2 ;;
           --server) server=$2 ;; --port) port=$2 ;; --nick) nick=$2 ;;
         esac
         shift 2 ;;
@@ -177,9 +178,10 @@ cmd_setup() {
   [ ! -f "$dir/config.yml" ] || die "shard $name exists already (change it with: $PROG edit $name)"
 
   if [ -t 0 ]; then
-    echo "Setting up shard $name. The hub's owner can give you the network, hub nick and hub key."
+    echo "Setting up shard $name. The hub's owner can give you these (SHARD INFO on the hub)."
     [ -n "$network" ] || network=$(ask "Network (the hub's name for it, e.g. EFnet)")
-    [ -n "$hub_nick" ] || hub_nick=$(ask "Hub bot's nick")
+    [ -n "$hub_gecos" ] || hub_gecos=$(ask "Hub bot's gecos (its IRC realname)")
+    [ -n "$hub_nick" ] || hub_nick=$(ask "Hub bot's nick now")
     [ -n "$hub_fp" ] || hub_fp=$(ask "Hub's key (SHA256:...)")
     [ -n "$server" ] || server=$(ask "IRC server for this shard (another server than the hub's)")
     [ -n "$port" ] || port=$(ask "Port" 6697)
@@ -192,6 +194,7 @@ cmd_setup() {
 
   local args=(init /shard --name "$name")
   [ -z "$network" ] || args+=(--network "$network")
+  [ -z "$hub_gecos" ] || args+=(--hub-gecos "$hub_gecos")
   [ -z "$hub_nick" ] || args+=(--hub-nick "$hub_nick")
   [ -z "$hub_fp" ] || args+=(--hub-fingerprint "$hub_fp")
   [ -z "$server" ] || args+=(--server "$server")

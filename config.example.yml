@@ -6,6 +6,9 @@ name: myshard
 network: EFnet
 
 # The hub (Gemdrop with the shards plugin): /msg <hub> SHARD INFO shows these.
+# The shard knows the hub by its gecos (IRC realname), as its nick may change;
+# hub_nick is only where to look first.
+hub_gecos: Gemdrop IRC bot
 hub_nick: Linuks
 hub_fingerprint: "SHA256:..."
 

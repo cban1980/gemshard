@@ -15,8 +15,11 @@ class LinkTest < Minitest::Test
   end
 
   def link(hub_fingerprint: @hub.fingerprint)
-    config = { "name" => "slay", "network" => "EFnet", "hub_nick" => "Linuks", "hub_fingerprint" => hub_fingerprint }
+    config = { "name" => "slay", "network" => "EFnet", "hub_gecos" => "Gemdrop", "hub_fingerprint" => hub_fingerprint }
+    @hub_nick = "Linuks"
+    @found = []
     @link = Gemshard::Link.new(config: config, identity: @identity, logger: Logger.new(@log),
+                               hub_nick: -> { @hub_nick }, found_hub: ->(nick) { @found << nick },
                                irc_notice: ->(nick, line) { @notices << [nick, line] }) { |m| @messages << m }
   end
 
@@ -55,12 +58,31 @@ class LinkTest < Minitest::Test
     refute @link.linked?, "a welcome for someone else's hello"
   end
 
-  def test_lines_from_others_are_ignored
+  def test_forged_lines_are_ignored_whoever_sends_them
     link
     irc_handshake
     @messages.pop
-    P.irc_lines(@hub.session.id, @hub.session.seal("t" => "state")).each { |l| @link.irc_line("Mallory", l) }
+    forged = FakeHub.new
+    forged.welcome_for(P.start(OpenSSL::PKey.generate_key("ED25519"), "hello").last)
+    P.irc_lines(@hub.session.id, forged.session.seal("t" => "state")).each { |l| @link.irc_line("Linuks", l) }
     assert @messages.empty?
+    assert_equal ["Linuks"], @found
+  end
+
+  def test_the_hub_is_followed_to_a_new_nick
+    link
+    irc_handshake
+    @messages.pop
+    P.irc_lines(@hub.session.id, @hub.session.seal("t" => "ping")).each { |l| @link.irc_line("Linux2", l) }
+    assert_equal "ping", @messages.pop["t"], "sealed by the hub: taken from its new nick"
+    assert_equal %w[Linuks Linux2], @found
+  end
+
+  def test_no_hello_while_the_hub_is_nowhere
+    link
+    @hub_nick = nil
+    @link.tick(irc_up: true)
+    assert_empty @notices
   end
 
   def test_the_hub_quitting_ends_the_session_and_we_say_hello_again

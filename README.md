@@ -25,8 +25,9 @@ network: on one machine they each get their own folder and container.
 
 All you need is Docker, git and bash, and an IRC server of the network that
 the hub isn't on. Nothing listens on a port: the shard only connects out, to
-IRC. Ask the hub's owner for three things: the **network** name, the **hub's
-nick**, and the **hub's key** (`SHA256:...`).
+IRC. Ask the hub's owner for what `SHARD INFO` shows them: the **network** name,
+the **hub's gecos** (its IRC realname), the **hub's nick**, and the **hub's key**
+(`SHA256:...`).
 
 1. Get the code and set up the shard (pick a short name for it, e.g. your nick):
 
@@ -35,8 +36,8 @@ nick**, and the **hub's key** (`SHA256:...`).
    bin/gemshard-docker setup myshard
    ```
 
-   It asks for the network, the hub's nick and key, your IRC server and the
-   shard's nick. Then it prints a line like this:
+   It asks for the network, the hub's gecos, nick and key, your IRC server and
+   the shard's nick. Then it prints a line like this:
 
    ```
    /msg Linuks SHARD ADD myshard SHA256:...
@@ -75,7 +76,7 @@ privileges and 128 MB of memory.
 The hub is Gemdrop with its `shards` plugin:
 
 ```
-/msg Linuks SHARD INFO                          the network, nick and key to hand out
+/msg Linuks SHARD INFO                          the network, gecos, nick and key to hand out
 /msg Linuks SHARD ADD myshard SHA256:...        what the shard's host sends you
 /msg Linuks SHARD LIST                          the shards, linked or not, and their servers
 /msg Linuks SHARD DEL myshard                   unlink one for good
@@ -87,7 +88,7 @@ Ruby 3.2+ with its standard library is all a shard needs:
 
 ```
 bin/gemshard init myshard           # makes myshard/config.yml and the shard's key
-$EDITOR myshard/config.yml          # name, network, hub_nick, hub_fingerprint, irc
+$EDITOR myshard/config.yml          # name, network, hub_gecos, hub_nick, hub_fingerprint, irc
 bin/gemshard check myshard/config.yml
 bin/gemshard myshard/config.yml     # run it (or with systemd: see below)
 ```
@@ -98,6 +99,14 @@ bin/gemshard myshard/config.yml     # run it (or with systemd: see below)
 NOTICEs to the hub's nick; nothing listens on a port on either side. The hub only
 sends the state when it changed, at most every 10 seconds, to stay within flood
 limits.
+
+**Finding the hub.** A shard knows the hub by its gecos (IRC realname), since the
+hub's nick may change. It follows the hub through nick changes, takes the hub's
+lines from whatever nick they come from (only the hub can make lines that check
+out), and when the hub comes back under another nick, finds it by its gecos.
+`hub_nick` is only where it looks first. The gecos only says where to send a
+hello: a bot counts as the hub only after it proves it has the hub's key, so
+copying the gecos gets nobody op.
 
 **Which bot acts.** In each channel, only one bot sets modes: the hub if it is
 there with op, else the opped shard first by name. Every bot can see on IRC who is

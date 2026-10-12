@@ -66,7 +66,7 @@ against the signature.
 
 | From | Message |
 | --- | --- |
-| hub | `{"t":"state", "network", "hub":{nick,userhost}, "bots":[{name,nick,userhost,server}], "admins":[…], "channels":[{name,key,access:{account:level},masks:[[mask,level]],mlock}], "sessions":[{nick,userhost,account}]}`, sent when it changes |
+| hub | `{"t":"state", "network", "hub":{nick,userhost,gecos}, "bots":[{name,nick,userhost,server}], "admins":[…], "channels":[{name,key,access:{account:level},masks:[[mask,level]],mlock}], "sessions":[{nick,userhost,account}]}`, sent when it changes |
 | hub | `{"t":"ping"}`, every 120 s |
 | shard | `{"t":"status","nick","userhost","server"}`, when it changes (the hub takes nick and user@host from the lines themselves) |
 | shard | `{"t":"pong"}` |
@@ -82,4 +82,6 @@ The link runs over IRC only: nothing listens on a port.
   `GS1 <tag> <message id> <part>/<total> <base64 chunk>`, with chunks of up to
   300 characters and at most 64 parts. The tag is `h` for the handshake (the
   signed JSON, base64-encoded), or the session id for messages. The hub takes a
-  shard's messages only from the nick and user@host it linked from.
+  shard's messages only from the nick (following its nick changes) and user@host
+  it linked from. A shard takes the hub's from any nick, since only the hub can
+  seal them, and so follows the hub to a new nick.

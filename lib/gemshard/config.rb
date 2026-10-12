@@ -31,7 +31,7 @@ module Gemshard
     def check!(config)
       raise ConfigError, "name: 1-32 of a-z, 0-9, _ and - (as added on the hub)" unless config["name"].to_s.match?(NAME)
       raise ConfigError, "network: the hub's name for the network (e.g. EFnet)" if config["network"].to_s.empty?
-      raise ConfigError, "hub_nick: the hub bot's nick" if config["hub_nick"].to_s.empty?
+      raise ConfigError, "hub_gecos: the hub bot's gecos (realname; SHARD INFO on the hub)" if config["hub_gecos"].to_s.strip.empty?
       unless config["hub_fingerprint"].to_s.match?(FINGERPRINT)
         raise ConfigError, "hub_fingerprint: SHA256:... (SHARD INFO on the hub)"
       end

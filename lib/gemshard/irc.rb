@@ -171,7 +171,7 @@ module Gemshard
 
     def add(channel, nick, userhost = nil, modes = "")
       chan = channel(channel) or return
-      entry = (chan[:members][fold(nick)] ||= { nick: nick, userhost: nil, modes: +"" })
+      entry = (chan[:members][fold(nick)] ||= { nick: nick, userhost: nil, gecos: nil, modes: +"" })
       entry[:nick] = nick
       entry[:userhost] = userhost if userhost
       modes.each_char { |m| entry[:modes] << m unless entry[:modes].include?(m) }
@@ -219,11 +219,30 @@ module Gemshard
       end
     end
 
-    # WHO (352): user, host, nick and flags ("H@").
-    def who(channel, user, host, nick, flags)
+    # WHO (352): user, host, nick, flags ("H@") and gecos. A WHO for a nick
+    # may name no channel of ours ("*"): its gecos still counts.
+    def who(channel, user, host, nick, flags, gecos = nil)
       modes = flags.to_s.chars.filter_map { |c| prefixes[c] }.join
       add(channel, nick, "#{user}@#{host}", modes) if on?(channel)
+      @channels.each_value { |c| (m = c[:members][fold(nick)]) && m[:gecos] = gecos } if gecos
     end
+
+    def present?(nick) = !nick.nil? && @channels.each_value.any? { |c| c[:members].key?(fold(nick)) }
+
+    # A member's nick with this gecos, if any.
+    def nick_with_gecos(gecos)
+      @channels.each_value do |c|
+        c[:members].each_value { |m| return m[:nick] if m[:gecos] && m[:gecos].strip.casecmp?(gecos.to_s.strip) }
+      end
+      nil
+    end
+
+    def gecos_of(nick)
+      @channels.each_value { |c| (g = c.dig(:members, fold(nick), :gecos)) && (return g) }
+      nil
+    end
+
+    def gecos_known?(nick) = @channels.each_value.any? { |c| c.dig(:members, fold(nick), :gecos) }
 
     # A MODE line's changes to the members and the channel's modes.
     def mode(channel, modestring, params)
