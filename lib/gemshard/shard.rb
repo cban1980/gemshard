@@ -1,3 +1,4 @@
+require "fileutils"
 require "json"
 require "logger"
 require "monitor"
@@ -15,10 +16,13 @@ module Gemshard
     STATUS_FILE_EVERY = 30       # data/status.json, for the container's health check
     WHO_AGAIN = 300              # seconds before asking a nick's gecos again
 
-    def initialize(config, logger: Logger.new($stdout))
+    # config: one network's (Config.load's "networks"); identity: the
+    # shard's key, the same on every network.
+    def initialize(config, identity: nil, logger: Logger.new($stdout))
       @config = config
       @log = logger
-      @identity = Identity.load(config["data_dir"])
+      FileUtils.mkdir_p(config["data_dir"], mode: 0o700)
+      @identity = identity || Identity.load(config["data_dir"])
       @roster = Roster.new
       @enforcer = Enforcer.new(name: config["name"], roster: @roster)
       @lock = Monitor.new

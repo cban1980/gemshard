@@ -18,8 +18,9 @@ to nobody else: it answers no commands and doesn't take orders from users or fro
 other shards. It saves the last state it got, so it carries on from it while
 Gemdrop is gone.
 
-A shard is for one IRC network. To help on several networks, run one shard per
-network: on one machine they each get their own folder and container.
+A shard can help on several IRC networks at once, each with its own hub: one
+Gemdrop on several networks, or a different hub on each. It has one key; each
+network has its own IRC connection, hub link and saved state.
 
 ## Hosting a shard (Docker)
 
@@ -37,14 +38,15 @@ the **hub's gecos** (its IRC realname), the **hub's nick**, and the **hub's key*
    ```
 
    It asks for the network, the hub's gecos, nick and key, your IRC server and
-   the shard's nick. Then it prints a line like this:
+   the shard's nick. More networks come later, one at a time:
+   `bin/gemshard-docker add-network myshard` asks the same for the next one. Then it prints a line like this:
 
    ```
    /msg Linuks SHARD ADD myshard SHA256:...
    ```
 
-2. Send that line to the hub's owner. They run it on IRC, and that lets your
-   shard link.
+2. Send that line to the hub's owner (for each network, its hub's owner). They
+   run it on IRC, and that lets your shard link there.
 
 3. Start it:
 
@@ -59,7 +61,8 @@ Everyday commands:
 
 | Command | Does |
 | --- | --- |
-| `bin/gemshard-docker status` | each shard: its IRC server and nick, linked or not, its channels |
+| `bin/gemshard-docker status` | each shard, per network: its IRC server and nick, linked or not, its channels |
+| `bin/gemshard-docker add-network myshard` | help on one more network, with its hub; then `restart myshard` |
 | `bin/gemshard-docker logs myshard -f` | follow its log |
 | `bin/gemshard-docker edit myshard` | change its config, then `restart myshard` |
 | `bin/gemshard-docker update` | get the latest version and restart the running shards |
@@ -67,7 +70,8 @@ Everyday commands:
 | `bin/gemshard-docker stop myshard` | stop it (it quits IRC) |
 
 `bin/gemshard-docker help` lists everything. Each shard's files are in
-`shards/<name>/` (`config.yml`, and `data/` with the key and the saved state),
+`shards/<name>/` (`config.yml`, and `data/` with the key, and a folder per
+network with its saved state),
 readable only by you. The container runs as your user, read-only, with no
 privileges and 128 MB of memory.
 
@@ -88,7 +92,8 @@ Ruby 3.2+ with its standard library is all a shard needs:
 
 ```
 bin/gemshard init myshard           # makes myshard/config.yml and the shard's key
-$EDITOR myshard/config.yml          # name, network, hub_gecos, hub_nick, hub_fingerprint, irc
+bin/gemshard add-network myshard/config.yml --network IRCnet ...   # more networks, if any
+$EDITOR myshard/config.yml          # name, and per network: hub_gecos, hub_nick, hub_fingerprint, irc
 bin/gemshard check myshard/config.yml
 bin/gemshard myshard/config.yml     # run it (or with systemd: see below)
 ```
@@ -141,8 +146,11 @@ again.
   locks, who is logged in as which account, and the bots. It never gets
   passwords, password hashes, or the hub's other data. Shards can't change
   anything on the hub.
-- **On disk:** the shard's key (`data/shard.key`) and saved state
-  (`data/state.json`) are mode 600.
+- **On disk:** the shard's key (`data/shard.key`) and each network's saved state
+  (`data/<network>/state.json`) are mode 600.
+- **Networks apart:** each network's hub signs its own welcome and gets its own
+  session keys. A hello names its network, and a hub refuses one for another
+  network, so nothing one network's hub says can reach another network.
 
 The protocol is in [docs/protocol.md](docs/protocol.md).
 

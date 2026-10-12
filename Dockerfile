@@ -32,9 +32,10 @@ CMD ["rake", "test"]
 # Runtime stage (default).
 FROM base AS runtime
 VOLUME /shard
-# Healthy = on IRC, by the status file the shard writes every 30 seconds.
+# Healthy = on IRC on every network, by the status files the shard writes
+# every 30 seconds (data/status.json, or data/<network>/status.json).
 HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
-  CMD ["ruby", "-rjson", "-e", "s = JSON.parse(File.read('/shard/data/status.json')); exit(s['irc'] == 'connected' && Time.now.to_i - s['updated_at_unix'] < 120 ? 0 : 1)"]
+  CMD ["ruby", "-rjson", "-e", "f = Dir['/shard/data/**/status.json']; exit(f.any? && f.all? { |p| s = JSON.parse(File.read(p)); s['irc'] == 'connected' && Time.now.to_i - s['updated_at_unix'] < 120 } ? 0 : 1)"]
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["ruby", "/app/bin/gemshard"]
 CMD ["/shard/config.yml"]

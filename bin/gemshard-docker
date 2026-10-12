@@ -6,8 +6,8 @@
 #   shards/<name>/config.yml   the shard's settings ("edit", then "restart")
 #   shards/<name>/data/        its key (shard.key: back it up!), saved state, status
 #
-# A shard is for one network. To help on several networks, set up one
-# shard per network; each runs in its own container.
+# A shard can help on several networks, each with its own hub
+# ("add-network"); it runs in one container either way.
 #
 # Needs only Docker, git and bash on the host.
 set -euo pipefail
@@ -24,8 +24,9 @@ usage() {
 Usage: $PROG <command> [options]
 
 Setting up a shard:
-  setup NAME [options]      make shards/NAME: its config and its key, then print
-                            what to send the hub's owner. Asks for what isn't given:
+  setup NAME [options]      make shards/NAME: its config and its key, for one network,
+                            then print what to send the hub's owner. Asks for what
+                            isn't given:
       --network NET         the hub's name for the network (e.g. EFnet)
       --hub-gecos TEXT      the hub bot's gecos (IRC realname): shards know it by that
       --hub-nick NICK       the hub bot's nick now (where to look for it first)
@@ -34,6 +35,9 @@ Setting up a shard:
       --port N              default 6697
       --no-tls              plain IRC (default: TLS)
       --nick NICK           the shard's nick on IRC
+  add-network NAME [options]
+                            help on one more network, with its own hub (same
+                            options as setup, --network needed)
   edit NAME                 open its config.yml in \$EDITOR and check it
   check NAME                check its config.yml
   fingerprint NAME          its key's fingerprint (for SHARD ADD on the hub)
@@ -155,70 +159,102 @@ ask() {
 
 # --- commands ----------------------------------------------------------------
 
-cmd_setup() {
-  local name=${1:-}
-  check_name "$name"
-  shift
-  local network="" hub_gecos="" hub_nick="" hub_fp="" server="" port="" tls=true nick=""
+# One network's settings, from options (net_* variables), then asked for
+# what is missing when there is a terminal.
+parse_network_options() {
+  net_network="" net_gecos="" net_nick="" net_fp="" net_server="" net_port="" net_tls=true net_shard_nick=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --network|--hub-gecos|--hub-nick|--hub-fingerprint|--server|--port|--nick)
         [ $# -ge 2 ] || die "$1 needs a value"
         case "$1" in
-          --network) network=$2 ;; --hub-gecos) hub_gecos=$2 ;; --hub-nick) hub_nick=$2 ;; --hub-fingerprint) hub_fp=$2 ;;
-          --server) server=$2 ;; --port) port=$2 ;; --nick) nick=$2 ;;
+          --network) net_network=$2 ;; --hub-gecos) net_gecos=$2 ;; --hub-nick) net_nick=$2 ;;
+          --hub-fingerprint) net_fp=$2 ;; --server) net_server=$2 ;; --port) net_port=$2 ;; --nick) net_shard_nick=$2 ;;
         esac
         shift 2 ;;
-      --no-tls) tls=false; shift ;;
-      *) die "setup: unknown option $1" ;;
+      --no-tls) net_tls=false; shift ;;
+      *) die "unknown option $1" ;;
     esac
   done
+}
+
+ask_network() {
+  [ -t 0 ] || return 0
+  echo "The hub's owner can give you the network, gecos, nick and key (SHARD INFO on the hub)."
+  [ -n "$net_network" ] || net_network=$(ask "Network (the hub's name for it, e.g. EFnet)")
+  [ -n "$net_gecos" ] || net_gecos=$(ask "Hub bot's gecos (its IRC realname)")
+  [ -n "$net_nick" ] || net_nick=$(ask "Hub bot's nick now")
+  [ -n "$net_fp" ] || net_fp=$(ask "Hub's key (SHA256:...)")
+  [ -n "$net_server" ] || net_server=$(ask "IRC server for this shard (another server than the hub's)")
+  [ -n "$net_port" ] || net_port=$(ask "Port" 6697)
+  if [ "$net_port" = 6667 ] && $net_tls; then
+    [ "$(ask "Port 6667 is usually without TLS. Use TLS? (y/n)" n)" = y ] || net_tls=false
+  fi
+  [ -n "$net_shard_nick" ] || net_shard_nick=$(ask "The shard's nick on $net_network")
+}
+
+network_args() {
+  [ -z "$net_port" ] || [[ "$net_port" =~ ^[0-9]{1,5}$ ]] || die "the port is a number"
+  net_args=()
+  [ -z "$net_network" ] || net_args+=(--network "$net_network")
+  [ -z "$net_gecos" ] || net_args+=(--hub-gecos "$net_gecos")
+  [ -z "$net_nick" ] || net_args+=(--hub-nick "$net_nick")
+  [ -z "$net_fp" ] || net_args+=(--hub-fingerprint "$net_fp")
+  [ -z "$net_server" ] || net_args+=(--server "$net_server")
+  [ -z "$net_port" ] || net_args+=(--port "$net_port")
+  $net_tls || net_args+=(--no-tls)
+  [ -z "$net_shard_nick" ] || net_args+=(--nick "$net_shard_nick")
+}
+
+# What to send the hub's owner for one network, once the config is complete.
+hand_over() {
+  local name=$1 fp=$2
+  if run_gemshard "$name" check /shard/config.yml >/dev/null 2>&1; then
+    echo "Send this to the owner of the hub on ${net_network:-the network}, to run as a bot admin on IRC:"
+    echo
+    echo "    /msg ${net_nick:-<hub>} SHARD ADD $name $fp"
+    echo
+  else
+    echo "The config isn't complete yet: $PROG edit $name"
+    echo "The shard's key, for the hub's owner: $fp"
+  fi
+}
+
+cmd_setup() {
+  local name=${1:-}
+  check_name "$name"
+  shift
+  parse_network_options "$@"
   local dir
   dir=$(shard_dir "$name")
-  [ ! -f "$dir/config.yml" ] || die "shard $name exists already (change it with: $PROG edit $name)"
-
-  if [ -t 0 ]; then
-    echo "Setting up shard $name. The hub's owner can give you these (SHARD INFO on the hub)."
-    [ -n "$network" ] || network=$(ask "Network (the hub's name for it, e.g. EFnet)")
-    [ -n "$hub_gecos" ] || hub_gecos=$(ask "Hub bot's gecos (its IRC realname)")
-    [ -n "$hub_nick" ] || hub_nick=$(ask "Hub bot's nick now")
-    [ -n "$hub_fp" ] || hub_fp=$(ask "Hub's key (SHA256:...)")
-    [ -n "$server" ] || server=$(ask "IRC server for this shard (another server than the hub's)")
-    [ -n "$port" ] || port=$(ask "Port" 6697)
-    if [ "$port" = 6667 ] && $tls; then
-      [ "$(ask "Port 6667 is usually without TLS. Use TLS? (y/n)" n)" = y ] || tls=false
-    fi
-    [ -n "$nick" ] || nick=$(ask "The shard's nick on IRC")
-  fi
-  [ -z "$port" ] || [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "the port is a number"
-
-  local args=(init /shard --name "$name")
-  [ -z "$network" ] || args+=(--network "$network")
-  [ -z "$hub_gecos" ] || args+=(--hub-gecos "$hub_gecos")
-  [ -z "$hub_nick" ] || args+=(--hub-nick "$hub_nick")
-  [ -z "$hub_fp" ] || args+=(--hub-fingerprint "$hub_fp")
-  [ -z "$server" ] || args+=(--server "$server")
-  [ -z "$port" ] || args+=(--port "$port")
-  $tls || args+=(--no-tls)
-  [ -z "$nick" ] || args+=(--nick "$nick")
+  [ ! -f "$dir/config.yml" ] || die "shard $name exists already (more networks: $PROG add-network $name)"
+  [ ! -t 0 ] || echo "Setting up shard $name, first for one network (add more later with: $PROG add-network $name)."
+  ask_network
+  network_args
 
   mkdir -p "$dir"
   chmod 700 "$HOME_DIR" "$dir"
   local fp
-  fp=$(run_gemshard "$name" "${args[@]}" | sed -n 's/^This shard.s key: //p')
+  fp=$(run_gemshard "$name" init /shard --name "$name" "${net_args[@]}" | sed -n 's/^This shard.s key: //p')
   [ -n "$fp" ] || die "making the shard's key failed"
   info "Made $dir (the key is data/shard.key: back it up with: $PROG backup $name)"
   echo
-  if run_gemshard "$name" check /shard/config.yml >/dev/null 2>&1; then
-    echo "Send this to the hub's owner, to run as a bot admin on IRC:"
-    echo
-    echo "    /msg ${hub_nick:-<hub>} SHARD ADD $name $fp"
-    echo
-    echo "Then start the shard: $PROG start $name"
-  else
-    echo "The config isn't complete yet: $PROG edit $name"
-    echo "Its key, for the hub's owner: $fp"
-  fi
+  hand_over "$name" "$fp"
+  echo "Then start the shard: $PROG start $name"
+}
+
+cmd_add_network() {
+  local name=${1:-}
+  require_shard "$name"
+  shift
+  parse_network_options "$@"
+  ask_network
+  [ -n "$net_network" ] || die "add-network needs --network NET"
+  network_args
+  run_gemshard "$name" add-network /shard/config.yml "${net_args[@]}"
+  echo
+  hand_over "$name" "$(run_gemshard "$name" fingerprint /shard/config.yml)"
+  if is_running "$name"; then echo "Then apply it: $PROG restart $name"; else echo "Then start the shard: $PROG start $name"; fi
 }
 
 cmd_edit() {
@@ -316,12 +352,17 @@ cmd_status() {
     local health
     health=$(docker container inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$(container "$name")")
     docker exec "$(container "$name")" ruby -rjson -e '
-      s = JSON.parse(File.read("/shard/data/status.json")) rescue (puts "#{ARGV[0]}: starting"; exit)
-      age = Time.now.to_i - s["updated_at_unix"]
-      irc = s["irc"] == "connected" ? "on IRC as #{s["nick"]} (#{s["server"]})" : "not on IRC"
-      hub = s["linked"] ? "linked to the hub" : "not linked to the hub#{" (enforcing from the saved state)" if s["hub_channels"] > 0}"
-      puts "#{ARGV[0]} (#{s["network"]}): #{irc}; #{hub}; in #{s["channels"]} of the hub'"'"'s #{s["hub_channels"]} channels" \
-           "#{"; health: #{ARGV[1]}" unless ARGV[1].to_s.empty?}#{"; status #{age} s old" if age > 90}"
+      files = Dir["/shard/data/**/status.json"]
+      puts "#{ARGV[0]}: starting" if files.empty?
+      puts "#{ARGV[0]}#{" (health: #{ARGV[1]})" unless ARGV[1].to_s.empty?}:" unless files.empty?
+      files.sort.each do |file|
+        s = JSON.parse(File.read(file)) rescue next
+        age = Time.now.to_i - s["updated_at_unix"]
+        irc = s["irc"] == "connected" ? "on IRC as #{s["nick"]} (#{s["server"]})" : "not on IRC"
+        hub = s["linked"] ? "linked to the hub" : "not linked to the hub#{" (enforcing from the saved state)" if s["hub_channels"] > 0}"
+        puts "  #{s["network"]}: #{irc}; #{hub}; in #{s["channels"]} of the hub'"'"'s #{s["hub_channels"]} channels" \
+             "#{"; status #{age} s old" if age > 90}"
+      end
     ' "$name" "$health"
   done
 }
@@ -396,7 +437,7 @@ cmd_backup() {
   local name=${1:-}
   require_shard "$name"
   local file=${2:-gemshard-$name-$(date +%Y%m%d-%H%M%S).tar.gz}
-  (umask 077 && tar -czf "$file" -C "$HOME_DIR" --exclude "$name/data/status.json" "$name/config.yml" "$name/data")
+  (umask 077 && tar -czf "$file" -C "$HOME_DIR" --exclude "status.json*" "$name/config.yml" "$name/data")
   info "Wrote $file (it holds the shard's key: keep it private)"
 }
 
@@ -438,11 +479,12 @@ command=${1:-help}
 case "$command" in
   help|-h|--help) usage; exit 0 ;;
   backup|restore) ;;
-  list|setup|edit|check|fingerprint|start|stop|restart|update|status|logs|build|test|remove|clean) require_docker ;;
+  list|setup|add-network|edit|check|fingerprint|start|stop|restart|update|status|logs|build|test|remove|clean) require_docker ;;
   *) echo "$PROG: unknown command '$command'" >&2; usage >&2; exit 1 ;;
 esac
 case "$command" in
   setup) cmd_setup "$@" ;;
+  add-network) cmd_add_network "$@" ;;
   edit) cmd_edit "$@" ;;
   check) cmd_check "$@" ;;
   fingerprint) cmd_fingerprint "$@" ;;
