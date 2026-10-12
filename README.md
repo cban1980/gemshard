@@ -36,7 +36,7 @@ It checks the machine (and installs Docker if needed), asks for a name, the
 and links. Run `bash ~/gemshard/setup.sh` again any time for a menu: status,
 start, more networks, log, settings, backup, update, and so on.
 
-[HOSTING.md](HOSTING.md) has both sides in full: what the hub's owner sends
+[docs/hosting.md](docs/hosting.md) has both sides in full: what the hub's owner sends
 and runs, and what the host does. The shard only connects out, to IRC, and runs
 in Docker as the host's user, read-only, with no privileges and 128 MB of
 memory. `bin/gemshard-docker help` lists the same things as commands.
